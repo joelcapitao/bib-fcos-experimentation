@@ -37,8 +37,12 @@ alias ibc='sudo podman run --rm --privileged \
 # Get rid of this line below once https://github.com/osbuild/images/pull/2231 is merged, and 
 # contained in a new osbuild/images release which is included in i-b-c
 # Then uncomment the line above
-BUILDER_IMAGE=localhost/cosa-of-ib
-sudo podman build -f Containerfile-cosa -t $BUILDER_IMAGE
+# Also integrate a build of 
+# https://github.com/osbuild/images/pull/2222
+BUILDER_IMAGE=quay.io/jbtrystramtestimages/cosa-ib
+#sudo podman build -f Containerfile-cosa -t $BUILDER_IMAGE
+
+alias ibc='sudo podman run --rm --privileged --network=none -v /var/lib/containers/storage:/var/lib/containers/storage -v ./output:/output -v ./fcos-bp.toml:/fcos-bp.toml $BUILDER_IMAGE'
 
 # Generate the disk image
 ibc build qcow2 \
@@ -48,7 +52,8 @@ ibc build qcow2 \
           --output-name fedora-coreos-rawhide \
           --with-buildlog \
           --with-manifest \
-          --with-metrics
+          --with-metrics \
+          --blueprint /fcos-bp.toml
 
 # Check the osbuild manifest that was generated and used
 jq . output/fedora-coreos/fedora-coreos-rawhide.osbuild-manifest.json

@@ -5,7 +5,7 @@ type = "xfs"
 # as b-i-b does not support yet adding ignition osbuild stage to the generated manifest
 # remove those kargs once supported.
 [install]
-kargs = ["rw", "console=tty0", "console=ttyS0", "ignition.firstboot", "ignition.platform.id=qemu"]
+kargs = ["rw", "console=tty0", "console=ttyS0", "$ignition_firstboot", "ignition.platform.id=qemu"]
 # We dont't want bootc to append the kargs list with boot=UUID= and root=UUID= info
 # as CoreOS already handles this.
 root-mount-spec = ""
