@@ -16,3 +16,6 @@ stateroot = "fedora-coreos"
 # but we have it in our cosa builder image that we copy/pasted to the target image (see the Containerfile)
 [install.ostree]
 bls-append-except-default = 'grub_users=""'
+
+[install.bootupd]
+skip-boot-uuid = true
