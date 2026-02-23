@@ -1,3 +1,6 @@
+# We don't want osbuild to inject mount units for the
+# disks as we will change the disks uuids anyway
+mount_configuration: none
 partition_table:
   type: "gpt"
   uuid: "00000000-0000-4000-a000-000000000001"
