@@ -15,7 +15,7 @@ spec:
 
     Task flow:
       clone-repository
-        └─► build-images  [matrix: build-platforms]  (fcos-image-builder)
+        └─► build-images  [matrix: build-platforms]  (image-builder)
               └─► build-image-index
 
     Blueprint and disk layout files are read directly from the cloned
@@ -64,7 +64,7 @@ spec:
       description: |
         Artifact type to build. Must match a top-level directory in the
         repository (e.g. "qemu", "metal"). Controls the image type and
-        the blueprint path used by the fcos-image-builder task.
+        the blueprint path used by the image-builder task.
 
     - name: source-image
       type: string
@@ -105,7 +105,7 @@ spec:
       runAfter:
         - clone-repository
       taskRef:
-        name: fcos-image-builder
+        name: image-builder
       matrix:
         params:
           - name: PLATFORM
