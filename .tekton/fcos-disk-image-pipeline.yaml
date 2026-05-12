@@ -1,0 +1,142 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: fcos-disk-image
+  labels:
+    pipelines.openshift.io/runtime: generic
+    pipelines.openshift.io/strategy: disk-image
+spec:
+  description: |
+    Build Fedora CoreOS disk images for multiple architectures using
+    image-builder-cli running on arch-native remote VMs. Produces one OCI
+    artifact per architecture and assembles them into a multi-arch image index.
+
+    Task flow:
+      clone-repository
+        └─► build-images  [matrix: build-platforms]  (fcos-image-builder)
+              └─► build-image-index
+
+    Blueprint and disk layout files are read directly from the cloned
+    repository. The arch is derived from the PLATFORM matrix entry:
+      shared/blueprint.toml     — common config (merged first)
+      <artifact>/<arch>.toml    — platform + console kargs (merged second)
+      disk/<arch>.yaml          — partition table
+
+  params:
+    - name: git-url
+      type: string
+      description: Source repository URL.
+
+    - name: revision
+      type: string
+      description: Git revision (branch, tag, or SHA) to build.
+      default: ""
+
+    - name: output-image
+      type: string
+      description: |
+        Target OCI image reference for the assembled multi-arch image index,
+        e.g. quay.io/redhat-user-workloads/fcos-tenant/fcos-qemu:rawhide.
+        Per-arch artifacts are pushed with a platform suffix appended.
+
+    - name: image-expires-after
+      type: string
+      description: |
+        Lifetime of the built images, e.g. 5d, 2w. Empty means no expiry.
+        Useful for PR builds that should be cleaned up automatically.
+      default: ""
+
+    - name: build-platforms
+      type: array
+      description: |
+        List of platforms to build on. Each entry must match a platform
+        configured in the Konflux multi-platform-controller.
+      default:
+        - linux/x86_64
+        - linux/aarch64
+        - linux/ppc64le
+        - linux/s390x
+
+    - name: artifact
+      type: string
+      description: |
+        Artifact type to build. Must match a top-level directory in the
+        repository (e.g. "qemu", "metal"). Controls the image type and
+        the blueprint path used by the fcos-image-builder task.
+
+    - name: source-image
+      type: string
+      description: |
+        Fully qualified pullspec of the FCOS bootc container image to build
+        the disk image from, e.g. quay.io/fedora/fedora-coreos:rawhide.
+
+  results:
+    - name: IMAGE_URL
+      value: $(tasks.build-image-index.results.IMAGE_URL)
+    - name: IMAGE_DIGEST
+      value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+    - name: CHAINS-GIT_URL
+      value: $(tasks.clone-repository.results.url)
+    - name: CHAINS-GIT_COMMIT
+      value: $(tasks.clone-repository.results.commit)
+
+  workspaces:
+    - name: git-auth
+      optional: true
+
+  tasks:
+    - name: clone-repository
+      taskRef:
+        name: git-clone-oci-ta
+        version: "0.1"
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.revision)
+        - name: ociStorage
+          value: $(params.output-image).git
+        - name: ociArtifactExpiresAfter
+          value: $(params.image-expires-after)
+      workspaces:
+        - name: basic-auth
+          workspace: git-auth
+
+    - name: build-images
+      runAfter:
+        - clone-repository
+      taskRef:
+        name: fcos-image-builder
+      matrix:
+        params:
+          - name: PLATFORM
+            value:
+              - $(params.build-platforms)
+      params:
+        - name: ARTIFACT
+          value: $(params.artifact)
+        - name: SOURCE_IMAGE
+          value: $(params.source-image)
+        - name: OUTPUT_IMAGE
+          value: $(params.output-image)
+        - name: IMAGE_APPEND_PLATFORM
+          value: "true"
+        - name: SOURCE_ARTIFACT
+          value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
+
+    - name: build-image-index
+      runAfter:
+        - build-images
+      taskRef:
+        name: build-image-index
+        version: "0.3"
+      params:
+        - name: IMAGE
+          value: $(params.output-image)
+        - name: IMAGES
+          value:
+            - $(tasks.build-images.results.IMAGE_REFERENCE[*])
+        - name: ALWAYS_BUILD_INDEX
+          value: "true"
+
+  finally: []

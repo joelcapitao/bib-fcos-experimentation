@@ -1,0 +1,346 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: fcos-image-builder
+  labels:
+    app.kubernetes.io/version: "0.1"
+    build.appstudio.redhat.com/build_type: disk-image
+  annotations:
+    tekton.dev/tags: "image-build, konflux, fcos"
+    tekton.dev/description: >
+      Build a Fedora CoreOS disk image using image-builder-cli running on an
+      arch-native remote VM provisioned by the Konflux multi-platform-controller.
+
+      Blueprints and disk layout are read directly from the cloned repository.
+      The arch is derived from the PLATFORM param, and the artifact name
+      (e.g. "qemu", "metal") determines which subdirectory to read from:
+
+        shared/blueprint.toml         — common config (merged first)
+        <ARTIFACT>/<arch>.toml        — platform + console kargs (merged second)
+        disk/<arch>.yaml              — partition table
+
+      The produced disk image is wrapped as an OCI artifact and pushed to
+      OUTPUT_IMAGE, with IMAGE_REFERENCE emitted as a task result so that the
+      build-image-index task can assemble the multi-arch manifest.
+spec:
+  params:
+    - name: PLATFORM
+      type: string
+      description: >
+        Target platform in the form "linux/<arch>", e.g. "linux/x86_64".
+        Must match a platform configured in the multi-platform-controller.
+        The arch component is used to locate disk/<arch>.yaml and
+        <ARTIFACT>/<arch>.toml inside the cloned repository.
+
+    - name: ARTIFACT
+      type: string
+      description: >
+        Artifact type to build. Must match a top-level directory in the
+        repository that contains per-arch blueprints (e.g. "qemu", "metal").
+        Controls the image type passed to image-builder-cli and the blueprint
+        path used.
+
+    - name: SOURCE_IMAGE
+      type: string
+      description: >
+        Fully qualified pullspec of the FCOS bootc container image to build
+        the disk image from, e.g.
+        quay.io/fedora/fedora-coreos:rawhide
+
+    - name: OUTPUT_IMAGE
+      type: string
+      description: >
+        Target OCI image reference where the disk image artifact will be pushed,
+        with the platform suffix appended, e.g.
+        quay.io/redhat-user-workloads/fcos-tenant/fcos-qemu:rawhide-linux-x86-64
+
+    - name: IMAGE_APPEND_PLATFORM
+      type: string
+      default: "true"
+      description: >
+        Append a sanitised platform suffix to the OUTPUT_IMAGE tag
+        (e.g. "-linux-x86-64"). Set to "false" when the tag already includes
+        the arch.
+
+    - name: SOURCE_ARTIFACT
+      type: string
+      description: >
+        OCI Trusted Artifact reference produced by git-clone-oci-ta. The task
+        extracts the repository source from this artifact before SSHing to the
+        remote VM.
+
+    - name: IBC_IMAGE
+      type: string
+      default: "ghcr.io/osbuild/image-builder-cli:latest"
+      description: >
+        image-builder-cli container image to run on the remote VM.
+
+    - name: STORAGE_DRIVER
+      type: string
+      default: vfs
+      description: Storage driver to configure for buildah when pushing results.
+
+  results:
+    - name: IMAGE_DIGEST
+      description: Digest of the OCI artifact pushed to the registry.
+    - name: IMAGE_URL
+      description: Repository and tag where the OCI artifact was pushed.
+    - name: IMAGE_REFERENCE
+      description: >
+        Full image reference (IMAGE_URL@IMAGE_DIGEST). Used by build-image-index
+        to assemble the multi-arch manifest list.
+
+  stepTemplate:
+    env:
+      - name: PLATFORM
+        value: $(params.PLATFORM)
+      - name: ARTIFACT
+        value: $(params.ARTIFACT)
+      - name: SOURCE_IMAGE
+        value: $(params.SOURCE_IMAGE)
+      - name: OUTPUT_IMAGE
+        value: $(params.OUTPUT_IMAGE)
+      - name: IMAGE_APPEND_PLATFORM
+        value: $(params.IMAGE_APPEND_PLATFORM)
+      - name: IBC_IMAGE
+        value: $(params.IBC_IMAGE)
+      - name: STORAGE_DRIVER
+        value: $(params.STORAGE_DRIVER)
+      - name: BUILDAH_IMAGE
+        value: 'registry.access.redhat.com/ubi9/buildah:9.7-1777422883'
+    volumeMounts:
+      - name: workdir
+        mountPath: /var/workdir
+
+  steps:
+    # -------------------------------------------------------------------------
+    # 1. Fetch the cloned repository from the OCI Trusted Artifact.
+    # -------------------------------------------------------------------------
+    - name: use-trusted-artifact
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:77563b5fb4b82f9b6a47070ba06e60486567d34e03ea60cd5169be0be53ad5dc
+      computeResources:
+        limits:
+          memory: 64Mi
+        requests:
+          cpu: 50m
+          memory: 64Mi
+      args:
+        - use
+        - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+
+    # -------------------------------------------------------------------------
+    # 2. Build and push the disk image on the arch-native remote VM.
+    # -------------------------------------------------------------------------
+    - name: build
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:4c470b5a153c4acd14bf4f8731b5e36c61d7faafe09c2bf376bb81ce84aa5709
+      computeResources:
+        limits:
+          memory: 128Mi
+        requests:
+          cpu: 250m
+          memory: 128Mi
+      volumeMounts:
+        - name: ssh
+          mountPath: /ssh
+          readOnly: true
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        # ------------------------------------------------------------------
+        # Resolve arch from platform (linux/x86_64 → x86_64)
+        # ------------------------------------------------------------------
+        ARCH="${PLATFORM##*/}"
+
+        # ------------------------------------------------------------------
+        # Resolve image-builder-cli image type from artifact name
+        # ------------------------------------------------------------------
+        case "${ARTIFACT}" in
+          qemu)  IMAGE_TYPE="qcow2" ;;
+          metal) IMAGE_TYPE="raw"   ;;
+          *)
+            echo "Unknown ARTIFACT '${ARTIFACT}'. Add it to the case statement."
+            exit 1
+            ;;
+        esac
+
+        # ------------------------------------------------------------------
+        # Optionally append platform suffix to the output tag
+        # ------------------------------------------------------------------
+        if [ "${IMAGE_APPEND_PLATFORM}" = "true" ]; then
+          OUTPUT_IMAGE="${OUTPUT_IMAGE}-${PLATFORM//[^a-zA-Z0-9]/-}"
+        fi
+
+        # ------------------------------------------------------------------
+        # Set up SSH access to the remote VM
+        # ------------------------------------------------------------------
+        mkdir -p ~/.ssh
+        if [ -e /ssh/error ]; then
+          cat /ssh/error
+          exit 1
+        elif [ -e /ssh/otp ]; then
+          curl --cacert /ssh/otp-ca -XPOST -d @/ssh/otp "$(cat /ssh/otp-server)" > ~/.ssh/id_rsa
+          echo "" >> ~/.ssh/id_rsa
+        else
+          cp /ssh/id_rsa ~/.ssh/
+        fi
+        chmod 0400 ~/.ssh/id_rsa
+
+        SSH_HOST="$(cat /ssh/host)"
+        BUILD_DIR="$(cat /ssh/user-dir)"
+        SSH_ARGS=(-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -i ~/.ssh/id_rsa)
+
+        ssh "${SSH_ARGS[@]}" "${SSH_HOST}" \
+          mkdir -p "${BUILD_DIR}/source" "${BUILD_DIR}/output" "${BUILD_DIR}/scripts" "${BUILD_DIR}/tekton-results"
+
+        # ------------------------------------------------------------------
+        # Sync repository source and docker credentials to the remote VM
+        # ------------------------------------------------------------------
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra /var/workdir/source/ "${SSH_HOST}:${BUILD_DIR}/source/"
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra "${HOME}/.docker/" "${SSH_HOST}:${BUILD_DIR}/.docker/"
+
+        # ------------------------------------------------------------------
+        # Write the build script executed on the remote VM
+        # ------------------------------------------------------------------
+        # Variables that expand locally (build-time):
+        cat > scripts/script-build.sh << REMOTESSHEOF
+        #!/bin/bash
+        set -euo pipefail
+
+        export BUILD_DIR="${BUILD_DIR}"
+        export OUTPUT_IMAGE="${OUTPUT_IMAGE}"
+        export SOURCE_IMAGE="${SOURCE_IMAGE}"
+        export IBC_IMAGE="${IBC_IMAGE}"
+        export IMAGE_TYPE="${IMAGE_TYPE}"
+        export ARCH="${ARCH}"
+        export ARTIFACT="${ARTIFACT}"
+        export BUILDAH_IMAGE="${BUILDAH_IMAGE}"
+        export STORAGE_DRIVER="${STORAGE_DRIVER}"
+
+        REMOTESSHEOF
+
+        # Variables that must expand on the remote VM (runtime):
+        cat >> scripts/script-build.sh << 'REMOTESSHEOF'
+
+        SHARED_BP="${BUILD_DIR}/source/shared/blueprint.toml"
+        ARTIFACT_BP="${BUILD_DIR}/source/${ARTIFACT}/${ARCH}.toml"
+        DISK_YAML="${BUILD_DIR}/source/disk/${ARCH}.yaml"
+
+        echo "=== Build inputs ==="
+        echo "SOURCE_IMAGE:  ${SOURCE_IMAGE}"
+        echo "IMAGE_TYPE:    ${IMAGE_TYPE}"
+        echo "OUTPUT_IMAGE:  ${OUTPUT_IMAGE}"
+        echo "Blueprint:     ${SHARED_BP}"
+        echo "Artifact bp:   ${ARTIFACT_BP}"
+        echo "Disk layout:   ${DISK_YAML}"
+
+        for f in "${SHARED_BP}" "${ARTIFACT_BP}" "${DISK_YAML}"; do
+          if [ ! -f "${f}" ]; then
+            echo "ERROR: required file not found: ${f}"
+            exit 1
+          fi
+        done
+
+        # Pull the image-builder-cli runner image
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${IBC_IMAGE}"
+
+        # Run image-builder-cli inside a privileged container.
+        # --network=none keeps the build hermetic after the initial pull.
+        sudo podman run --rm --privileged \
+          --network=none \
+          -v /var/lib/containers/storage:/var/lib/containers/storage \
+          -v "${BUILD_DIR}/source:/repo:ro" \
+          -v "${BUILD_DIR}/output:/output" \
+          "${IBC_IMAGE}" \
+            build "${IMAGE_TYPE}" \
+            --blueprint "/repo/shared/blueprint.toml" \
+            --blueprint "/repo/${ARTIFACT}/${ARCH}.toml" \
+            --disk "/repo/disk/${ARCH}.yaml" \
+            --output-dir /output \
+            --local \
+            "${SOURCE_IMAGE}"
+
+        echo "=== Build complete, output contents ==="
+        ls -lhR "${BUILD_DIR}/output/"
+
+        # ------------------------------------------------------------------
+        # Wrap the disk image as an OCI artifact and push it
+        # ------------------------------------------------------------------
+        sudo podman run --rm --privileged \
+          -v "${BUILD_DIR}/output:/output:ro" \
+          -v "${BUILD_DIR}/.docker:/.docker:ro" \
+          -v "${BUILD_DIR}/tekton-results:/tekton-results" \
+          "${BUILDAH_IMAGE}" \
+          /bin/bash -s << 'PUSHEOF'
+
+        set -euo pipefail
+
+        dnf -y install buildah skopeo pigz jq
+
+        buildah manifest create "${OUTPUT_IMAGE}"
+
+        # Locate and push the produced image file
+        if [ -f /output/qcow2/disk.qcow2 ]; then
+          echo "Pushing qcow2 artifact"
+          buildah manifest add --arch "$(arch)" --os linux \
+            --artifact --artifact-type application/vnd.diskimage.qcow2 \
+            "${OUTPUT_IMAGE}" /output/qcow2/disk.qcow2
+
+        elif [ -f /output/image/disk.raw ]; then
+          echo "Compressing and pushing raw artifact"
+          pigz /output/image/disk.raw
+          buildah manifest add --arch "$(arch)" --os linux \
+            --artifact --artifact-type application/vnd.diskimage.raw.gzip \
+            "${OUTPUT_IMAGE}" /output/image/disk.raw.gz
+
+        else
+          echo "ERROR: no recognised disk image found under /output"
+          ls -lhR /output
+          exit 1
+        fi
+
+        buildah manifest push \
+          --digestfile /tekton-results/image-index-digest \
+          --authfile /.docker/config.json \
+          --all "${OUTPUT_IMAGE}"
+
+        # Extract the single image manifest digest from the index and
+        # overwrite the tag so it points directly to the manifest (not the index)
+        INDEX_DIGEST="$(cat /tekton-results/image-index-digest)"
+        REPO="${OUTPUT_IMAGE%:*}"
+        MANIFEST_DIGEST="$(buildah manifest inspect --authfile /.docker/config.json "${REPO}@${INDEX_DIGEST}" \
+          | jq -r '.manifests[0].digest')"
+
+        skopeo copy \
+          --authfile /.docker/config.json \
+          "docker://${REPO}@${MANIFEST_DIGEST}" \
+          "docker://${OUTPUT_IMAGE}"
+
+        echo -n "${OUTPUT_IMAGE}"    | tee /tekton-results/IMAGE_URL
+        echo -n "${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_DIGEST
+        echo -n "${OUTPUT_IMAGE}@${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_REFERENCE
+
+        PUSHEOF
+
+        REMOTESSHEOF
+
+        # ------------------------------------------------------------------
+        # Transfer and execute the build script
+        # ------------------------------------------------------------------
+        chmod +x scripts/script-build.sh
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra scripts/ "${SSH_HOST}:${BUILD_DIR}/scripts/"
+
+        ssh "${SSH_ARGS[@]}" "${SSH_HOST}" "bash ${BUILD_DIR}/scripts/script-build.sh"
+
+        # ------------------------------------------------------------------
+        # Retrieve task results written on the remote VM
+        # ------------------------------------------------------------------
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra "${SSH_HOST}:${BUILD_DIR}/tekton-results/" /tekton/results/
+
+  volumes:
+    - name: workdir
+      emptyDir: {}
+    - name: ssh
+      secret:
+        optional: false
+        secretName: multi-platform-ssh-$(context.taskRun.name)

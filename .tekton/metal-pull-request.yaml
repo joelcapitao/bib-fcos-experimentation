@@ -1,0 +1,45 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: fcos-metal-pull-request
+  annotations:
+    build.appstudio.openshift.io/repo: https://github.com/joelcapitao/bib-fcos-experimentation?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
+    pipelinesascode.tekton.dev/on-cel-expression: |
+      event == "pull_request" && target_branch == "main"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+  labels:
+    appstudio.openshift.io/application: fcos-disk-images
+    appstudio.openshift.io/component: fcos-metal
+    pipelines.appstudio.openshift.io/type: build
+spec:
+  params:
+    - name: git-url
+      value: '{{source_url}}'
+    - name: revision
+      value: '{{revision}}'
+    - name: output-image
+      value: quay.io/redhat-user-workloads/fcos-tenant/fcos-metal:on-pr-{{revision}}
+    - name: image-expires-after
+      value: 5d
+    - name: build-platforms
+      value:
+        - linux/x86_64
+        - linux/aarch64
+        - linux/ppc64le
+        - linux/s390x
+    - name: artifact
+      value: metal
+    - name: source-image
+      value: quay.io/fedora/fedora-coreos:rawhide
+  pipelineRef:
+    name: fcos-disk-image
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-fcos-metal
+  workspaces:
+    - name: git-auth
+      secret:
+        secretName: '{{git_auth_secret}}'
