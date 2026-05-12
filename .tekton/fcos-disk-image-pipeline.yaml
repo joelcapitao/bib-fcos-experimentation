@@ -6,7 +6,7 @@ metadata:
     pipelines.openshift.io/runtime: generic
     pipelines.openshift.io/strategy: disk-image
   annotations:
-    pipelinesascode.tekton.dev/task: "[git-clone-oci-ta, .tekton/tasks/image-builder.yaml]"
+    pipelinesascode.tekton.dev/task: "[.tekton/tasks/image-builder.yaml]"
 spec:
   description: |
     Build Fedora CoreOS disk images for multiple architectures using
@@ -89,17 +89,14 @@ spec:
   tasks:
     - name: clone-repository
       taskRef:
-        name: git-clone-oci-ta
-        version: "0.1"
-      params:
-        - name: url
-          value: $(params.git-url)
-        - name: revision
-          value: $(params.revision)
-        - name: ociStorage
-          value: $(params.output-image).git
-        - name: ociArtifactExpiresAfter
-          value: $(params.image-expires-after)
+        params:
+        - name: name
+          value: git-clone-oci-ta
+        - name: bundle
+          value: quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.1@sha256:13d49df7dc9ae301627e45f95a236011422996152f1bea46cd60217b0f057407
+        - name: kind
+          value: task
+        resolver: bundles
       workspaces:
         - name: basic-auth
           workspace: git-auth
