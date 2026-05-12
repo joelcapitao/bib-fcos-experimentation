@@ -12,7 +12,8 @@ metadata:
     pipelinesascode.tekton.dev/max-keep-runs: "3"
   labels:
     appstudio.openshift.io/application: fcos-disk-images
-    appstudio.openshift.io/component: fcos-metal
+    # TODO: derive the branch prefix ("rawhide") dynamically instead of hardcoding
+    appstudio.openshift.io/component: rawhide-x86-metal
     pipelines.appstudio.openshift.io/type: build
 spec:
   params:
