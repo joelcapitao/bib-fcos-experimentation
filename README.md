@@ -1,18 +1,14 @@
-# Generate FCOS disk image with image-builder - experimentation
+# image-builder pipelines for FCOS
 
 ## Overview
 
-This work aims to identify the missing pieces required to FCOS disk images using `image-builder-cli`.
-We use `image-builder-cli` instead of `bootc-image-builder` because it is the designated successor in the near future.
-Adopting the target binary now helps catch issues early and ensures we receive updates first, as `bootc-image-builder` inherits its changes from i-b-c.
-
-This is a logical continuation of the work done in [coreos-assembler PR #4224](https://github.com/coreos/coreos-assembler/pull/4224/), which introduced the ability to use `bootc install to-filesystem` for FCOS image generation.
+This work aims iterate on a bootimages definitions repo for Fedora CoreOS, to be used by image builder through Konflux.
 
 ## Goals
 
-1. Identify gaps between current `image-builder-cli` capabilities and FCOS requirements
-2. Document the missing features/stages needed for full FCOS support
-3. Propose solutions that can be contributed upstream to `osbuild/images`.
+1. Setup a clean directory structure to define and maintain all our produced artifacts
+2. Develop and iterate on a image-builder tekton task for Konflux.
+3. Identify what can be contributed to image-builder for shared maintenance between FCOS and image-builder.
 
 ## Usage
 
@@ -33,22 +29,13 @@ alias ibc='sudo podman run --rm --privileged \
            -v ./fcos-bp.toml:/fcos-bp.toml \
            ghcr.io/osbuild/image-builder-cli:latest'
 
-# this image was generated from https://github.com/coreos/coreos-assembler/pull/4224/
-# Use the base cosa image once the PR is merged
-#BUILDER_IMAGE=quay.io/jbtrystramtestimages/cosa:latest
-# Get rid of those lines below once 
-#  1. https://github.com/osbuild/images/pull/2231 is merged, and
-#     contained in a new osbuild/images release which is included in i-b-c
-#  2. https://github.com/osbuild/images/pull/2222 is merged and included as well
-# Then uncomment the line above
-sudo podman build -f Containerfile-cosa -t $BUILDER_IMAGE
-IBC_IMAGE=localhost/custom-image-builder
-sudo podman build -f Containerfile-image-builder -t $IBC_IMAGE
-alias ibc='sudo podman run --rm --privileged --network=none -v /var/lib/containers/storage:/var/lib/containers/storage -v ./output:/output -v ./fcos-bp.toml:/fcos-bp.toml $IBC_IMAGE'
+# We use the bootc base image as the builder image as it
+# comes with python and is generally versionned closely with FCOS.
+BUILDER=quay.io/bootc-devel/fedora-bootc-rawhide-standard
 
 # Generate the disk image
 ibc build qcow2 \
-          --bootc-build-ref $BUILDER_IMAGE \
+          --bootc-build-ref $BUILDER \
           --bootc-ref $TARGET_FCOS_IMAGE \
           --output-dir fedora-coreos \
           --output-name fedora-coreos-rawhide \
@@ -69,8 +56,3 @@ kola run --qemu-image output/fedora-coreos/fedora-coreos-rawhide.qcow2
 
 ## Issues
 
-I'm using the issues section to report all the issues as it's more appropriate to discuss.
-
-* [image-builder is missing ignition support](https://github.com/joelcapitao/bib-fcos-experimentation/issues/1)
-* [coreos-gpt-setup fails to resize rootfs partition](https://github.com/joelcapitao/bib-fcos-experimentation/issues/2)
-* [Support 4k sector size through blueprint](https://github.com/joelcapitao/bib-fcos-experimentation/issues/8)

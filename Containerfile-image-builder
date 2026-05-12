@@ -1,4 +1,0 @@
-FROM ghcr.io/osbuild/image-builder-cli:latest
-RUN sudo dnf install -y libvirt-devel libvirt-libs
-# Includes https://github.com/osbuild/images/pull/2222 changes
-COPY --from=quay.io/jbtrystramtestimages/cosa-ib:latest /usr/bin/image-builder /usr/bin/image-builder
