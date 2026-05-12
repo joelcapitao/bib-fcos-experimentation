@@ -202,6 +202,8 @@ spec:
         # ------------------------------------------------------------------
         # Write the build script executed on the remote VM
         # ------------------------------------------------------------------
+        mkdir -p scripts
+
         # Variables that expand locally (build-time):
         cat > scripts/script-build.sh << REMOTESSHEOF
         #!/bin/bash
@@ -267,6 +269,8 @@ spec:
         # Wrap the disk image as an OCI artifact and push it
         # ------------------------------------------------------------------
         sudo podman run --rm --privileged \
+          -e OUTPUT_IMAGE \
+          -e STORAGE_DRIVER \
           -v "${BUILD_DIR}/output:/output:ro" \
           -v "${BUILD_DIR}/.docker:/.docker:ro" \
           -v "${BUILD_DIR}/tekton-results:/tekton-results" \

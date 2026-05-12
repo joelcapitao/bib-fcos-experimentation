@@ -5,8 +5,6 @@ metadata:
   labels:
     pipelines.openshift.io/runtime: generic
     pipelines.openshift.io/strategy: disk-image
-  annotations:
-    pipelinesascode.tekton.dev/task: "[.tekton/tasks/image-builder.yaml]"
 spec:
   description: |
     Build Fedora CoreOS disk images for multiple architectures using
@@ -15,11 +13,11 @@ spec:
 
     Task flow:
       clone-repository
-        └─► build-images  [matrix: build-platforms]  (image-builder)
+        └─► build-images  (image-builder)
               └─► build-image-index
 
     Blueprint and disk layout files are read directly from the cloned
-    repository. The arch is derived from the PLATFORM matrix entry:
+    repository. The arch is derived from the PLATFORM parameter:
       shared/blueprint.toml     — common config (merged first)
       <artifact>/<arch>.toml    — platform + console kargs (merged second)
       disk/<arch>.yaml          — partition table
@@ -48,16 +46,17 @@ spec:
         Useful for PR builds that should be cleaned up automatically.
       default: ""
 
-    - name: build-platforms
-      type: array
-      description: |
-        List of platforms to build on. Each entry must match a platform
-        configured in the Konflux multi-platform-controller.
-      default:
-        - linux/x86_64
-        - linux/aarch64
-        - linux/ppc64le
-        - linux/s390x
+    # TODO: restore matrix over build-platforms once x86_64 is validated.
+    # - name: build-platforms
+    #   type: array
+    #   description: |
+    #     List of platforms to build on. Each entry must match a platform
+    #     configured in the Konflux multi-platform-controller.
+    #   default:
+    #     - linux/x86_64
+    #     - linux/aarch64
+    #     - linux/ppc64le
+    #     - linux/s390x
 
     - name: artifact
       type: string
@@ -90,13 +89,22 @@ spec:
     - name: clone-repository
       taskRef:
         params:
-        - name: name
-          value: git-clone-oci-ta
-        - name: bundle
-          value: quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.1@sha256:13d49df7dc9ae301627e45f95a236011422996152f1bea46cd60217b0f057407
-        - name: kind
-          value: task
+          - name: name
+            value: git-clone-oci-ta
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.1@sha256:13d49df7dc9ae301627e45f95a236011422996152f1bea46cd60217b0f057407
+          - name: kind
+            value: task
         resolver: bundles
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.revision)
+        - name: ociStorage
+          value: $(params.output-image).git
+        - name: ociArtifactExpiresAfter
+          value: $(params.image-expires-after)
       workspaces:
         - name: basic-auth
           workspace: git-auth
@@ -106,12 +114,15 @@ spec:
         - clone-repository
       taskRef:
         name: image-builder
-      matrix:
-        params:
-          - name: PLATFORM
-            value:
-              - $(params.build-platforms)
+      # TODO: restore matrix over build-platforms once x86_64 is validated.
+      # matrix:
+      #   params:
+      #     - name: PLATFORM
+      #       value:
+      #         - $(params.build-platforms)
       params:
+        - name: PLATFORM
+          value: linux/x86_64
         - name: ARTIFACT
           value: $(params.artifact)
         - name: SOURCE_IMAGE
