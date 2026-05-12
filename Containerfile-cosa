@@ -1,2 +1,0 @@
-FROM quay.io/jbtrystramtestimages/cosa:latest
-RUN sudo chmod -R 644 /boot/initramfs*

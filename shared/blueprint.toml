@@ -1,0 +1,6 @@
+name = "Fedora CoreOS"
+
+# Create an empty Ignition firstboot marker so the Ignition first-boot
+# sequence runs on the produced image.
+[customizations.ignition.firstboot]
+empty = true

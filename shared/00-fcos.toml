@@ -1,0 +1,4 @@
+# TODO: add this to fedora-coreos-config in overlay.d/10bootc/usr/lib/bootc/install/
+# we can also apply it with ibc option --bootc-default-fs xfs
+[install.filesystem.root]
+type = "xfs"

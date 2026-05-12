@@ -1,0 +1,4 @@
+# Platform: qemu — x86_64
+# Canonical source for console kargs: https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml
+[customizations.kernel]
+append = "ignition.platform.id=qemu console=tty0 console=ttyS0,115200n8"

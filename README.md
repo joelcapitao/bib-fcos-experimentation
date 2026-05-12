@@ -10,19 +10,67 @@ This is a logical continuation of the work done in [coreos-assembler PR #4224](h
 
 ## Goals
 
-1. Identify gaps between current `image-builder-cli` capabilities and FCOS requirements
-2. Document the missing features/stages needed for full FCOS support
-3. Propose solutions that can be contributed upstream to `osbuild/images`.
+ 1. Identify gaps between current `image-builder-cli` capabilities and FCOS requirements
+ 2. Document the missing features/stages needed for full FCOS support
+ 3. Propose solutions that can be contributed upstream to `osbuild/images`.
+ 4. Develop and iterate on an image-builder Tekton task for Konflux.
+ 5. Develop an automated workflow with Konflux and its facilities
+
+## Repository structure
+
+```
+.
+├── shared/
+│   ├── blueprint.toml   # Common blueprint: image name + ignition firstboot marker
+│   └── 00-fcos.toml     # bootc install config: stateroot, mount specs, fs type
+│
+├── disk/
+│   ├── x86_64.yaml      # GPT layout: BIOS-BOOT + EFI + boot + root
+│   ├── aarch64.yaml     # GPT layout: reserved + EFI + boot + root
+│   ├── ppc64le.yaml     # GPT layout: PReP + reserved + boot + root
+│   └── s390x.yaml       # GPT layout: boot (p3) + root (p4)
+│
+├── qemu/                # Artifact: qcow2 image for QEMU
+│   ├── x86_64.toml      # ignition.platform.id=qemu + tty0/ttyS0 console
+│   ├── aarch64.toml     # ignition.platform.id=qemu
+│   ├── ppc64le.toml     # ignition.platform.id=qemu + hvc0/tty0 console
+│   └── s390x.toml       # ignition.platform.id=qemu
+│
+└── metal/               # Artifact: raw image for bare metal
+    ├── x86_64.toml      # ignition.platform.id=metal
+    ├── aarch64.toml     # ignition.platform.id=metal
+    ├── ppc64le.toml     # ignition.platform.id=metal
+    └── s390x.toml       # ignition.platform.id=metal
+```
+
+### Design principles
+
+- **`disk/`** is the single source of truth for partition tables, one file per
+  architecture. The partition table is never duplicated.
+
+- **Blueprints are layered** and merged by image-builder-cli at build time:
+  1. `shared/blueprint.toml` — config common to every image (ignition firstboot, name)
+  2. `<artifact>/<arch>.toml` — platform ID and arch-specific console kargs
+
+  Future variants (e.g. `debug`) add a third layer by placing a
+  `<artifact>/<arch>/<variant>.toml` with only the extra kargs.
+
+- Each `<artifact>/<arch>.toml` is explicit and self-contained — every arch has
+  its own file even when the kargs happen to be identical.
+
+- The `shared/00-fcos.toml` file is a bootc install configuration that must be
+  present inside the target container image at
+  `/usr/lib/bootc/install/00-fcos.toml`. This is tracked here for reference
+  and will eventually be upstreamed into `fedora-coreos-config` overlays.d.
 
 ## Usage
 
 ```bash
-# Add our configuration to base image
 TARGET_FCOS_IMAGE=localhost/fcos-with-image-builder
 sudo podman build -f Containerfile -t $TARGET_FCOS_IMAGE
-
 # verify the configuration
 sudo podman run --rm $TARGET_FCOS_IMAGE bootc install print-configuration | jq
+BUILDER_IMAGE=quay.io/bootc-devel/fedora-bootc-rawhide-standard
 
 mkdir -p output
 
@@ -30,23 +78,13 @@ alias ibc='sudo podman run --rm --privileged \
            --network=none \
            -v /var/lib/containers/storage:/var/lib/containers/storage \
            -v ./output:/output \
-           -v ./fcos-bp.toml:/fcos-bp.toml \
+           -v .:/srv \
            ghcr.io/osbuild/image-builder-cli:latest'
 
-# this image was generated from https://github.com/coreos/coreos-assembler/pull/4224/
-# Use the base cosa image once the PR is merged
-#BUILDER_IMAGE=quay.io/jbtrystramtestimages/cosa:latest
-# Get rid of those lines below once 
-#  1. https://github.com/osbuild/images/pull/2231 is merged, and
-#     contained in a new osbuild/images release which is included in i-b-c
-#  2. https://github.com/osbuild/images/pull/2222 is merged and included as well
-# Then uncomment the line above
-sudo podman build -f Containerfile-cosa -t $BUILDER_IMAGE
-IBC_IMAGE=localhost/custom-image-builder
-sudo podman build -f Containerfile-image-builder -t $IBC_IMAGE
-alias ibc='sudo podman run --rm --privileged --network=none -v /var/lib/containers/storage:/var/lib/containers/storage -v ./output:/output -v ./fcos-bp.toml:/fcos-bp.toml $IBC_IMAGE'
-
-# Generate the disk image
+# Build a specific (artifact, arch, variant) combination.
+# Blueprints are merged in order: shared → artifact/arch → variant (if any).
+#
+# Example: qemu image for x86_64, base variant
 ibc build qcow2 \
           --bootc-build-ref $BUILDER_IMAGE \
           --bootc-ref $TARGET_FCOS_IMAGE \
@@ -55,22 +93,32 @@ ibc build qcow2 \
           --with-buildlog \
           --with-manifest \
           --with-metrics \
-          --blueprint /fcos-bp.toml
+          --blueprint /srv/shared/blueprint.toml \
+          --blueprint /srv/qemu/x86_64.toml
 
-# Check the osbuild manifest that was generated and used
-jq . output/fedora-coreos/fedora-coreos-rawhide.osbuild-manifest.json
-
-# boot the image with cosa
+# Boot the image with cosa
 cosa run -c --qemu-image output/fedora-coreos/fedora-coreos-rawhide.qcow2
 
-# run the tests
+# Run the tests
 kola run --qemu-image output/fedora-coreos/fedora-coreos-rawhide.qcow2
 ```
 
-## Issues
+### Adding a new variant
 
-I'm using the issues section to report all the issues as it's more appropriate to discuss.
+Create `<artifact>/<arch>/<variant>.toml` with only the extra kargs:
 
-* [image-builder is missing ignition support](https://github.com/joelcapitao/bib-fcos-experimentation/issues/1)
-* [coreos-gpt-setup fails to resize rootfs partition](https://github.com/joelcapitao/bib-fcos-experimentation/issues/2)
-* [Support 4k sector size through blueprint](https://github.com/joelcapitao/bib-fcos-experimentation/issues/8)
+```toml
+# Example: qemu/x86_64/debug.toml
+[customizations.kernel]
+append = "systemd.log_level=debug"
+```
+
+Then pass it as a third `--blueprint` flag after the arch-level one.
+
+### Console karg reference
+
+Console kargs follow the canonical FCOS
+[platforms.yaml](https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml).
+
+## Current Issues
+
