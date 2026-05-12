@@ -1,11 +1,16 @@
 [install.filesystem.root]
 type = "xfs"
 
+# TODO source this from a separate platform.yaml file.
+# Cannonical source is https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml
+
 # We add the ignition.firstboot and ignition.platform.id for testing purpose
 # as b-i-b does not support yet adding ignition osbuild stage to the generated manifest
 # remove those kargs once supported.
 [install]
 kargs = ["rw", "console=tty0", "console=ttyS0", "$ignition_firstboot", "ignition.platform.id=qemu"]
+
+# TODO remove when https://github.com/coreos/fedora-coreos-config/pull/4170 merges
 # We dont't want bootc to append the kargs list with boot=UUID= and root=UUID= info
 # as CoreOS already handles this.
 root-mount-spec = ""
