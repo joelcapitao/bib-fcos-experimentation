@@ -5,6 +5,8 @@ metadata:
   labels:
     pipelines.openshift.io/runtime: generic
     pipelines.openshift.io/strategy: disk-image
+  annotations:
+    pipelinesascode.tekton.dev/task: "[git-clone-oci-ta, .tekton/tasks/image-builder.yaml]"
 spec:
   description: |
     Build Fedora CoreOS disk images for multiple architectures using
