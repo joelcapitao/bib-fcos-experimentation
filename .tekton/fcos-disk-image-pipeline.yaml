@@ -123,19 +123,4 @@ spec:
         - name: SOURCE_ARTIFACT
           value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
 
-    - name: build-image-index
-      runAfter:
-        - build-images
-      taskRef:
-        name: build-image-index
-        version: "0.3"
-      params:
-        - name: IMAGE
-          value: $(params.output-image)
-        - name: IMAGES
-          value:
-            - $(tasks.build-images.results.IMAGE_REFERENCE[*])
-        - name: ALWAYS_BUILD_INDEX
-          value: "true"
-
   finally: []
