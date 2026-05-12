@@ -1,0 +1,6 @@
+# Platform: qemu — aarch64
+# No kernel console arguments: aarch64 qemu only sets grub_commands in
+# platforms.yaml, not kernel_arguments.
+# Canonical source: https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml
+[customizations.kernel]
+append = "ignition.platform.id=qemu"

@@ -1,0 +1,5 @@
+# Platform: metal — aarch64
+# No console kernel arguments for metal; the installer sets those at install
+# time via coreos-installer --console.
+[customizations.kernel]
+append = "ignition.platform.id=metal"

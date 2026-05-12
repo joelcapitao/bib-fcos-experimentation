@@ -1,0 +1,6 @@
+# Platform: qemu — s390x
+# No kernel console arguments: s390x doesn't use GRUB and console handling
+# differs from other architectures.
+# Canonical source: https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml
+[customizations.kernel]
+append = "ignition.platform.id=qemu"

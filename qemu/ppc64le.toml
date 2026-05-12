@@ -1,0 +1,6 @@
+# Platform: qemu — ppc64le
+# petitboot doesn't understand GRUB console commands, so console kargs must
+# be set at the kernel level.
+# Canonical source: https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml
+[customizations.kernel]
+append = "ignition.platform.id=qemu console=hvc0 console=tty0"

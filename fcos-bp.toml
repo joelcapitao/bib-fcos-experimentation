@@ -1,4 +1,0 @@
-name = "Fedora CoreOS"
-
-[customizations.ignition.firstboot]
-empty = true
