@@ -38,7 +38,7 @@ spec:
   pipelineRef:
     name: fcos-disk-image
   taskRunTemplate:
-    serviceAccountName: build-pipeline-fcos-qemu
+    serviceAccountName: build-pipeline-rawhide-x86-qemu
   workspaces:
     - name: git-auth
       secret:

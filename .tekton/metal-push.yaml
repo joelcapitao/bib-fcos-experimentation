@@ -38,7 +38,8 @@ spec:
   pipelineRef:
     name: fcos-disk-image
   taskRunTemplate:
-    serviceAccountName: build-pipeline-fcos-metal
+    # TODO remove the hardcoded arch?
+    serviceAccountName: build-pipeline-rawhide-x86-metal
   workspaces:
     - name: git-auth
       secret:

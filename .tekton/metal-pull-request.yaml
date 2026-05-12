@@ -39,7 +39,7 @@ spec:
   pipelineRef:
     name: fcos-disk-image
   taskRunTemplate:
-    serviceAccountName: build-pipeline-fcos-metal
+    serviceAccountName: build-pipeline-rawhide-x86-metal
   workspaces:
     - name: git-auth
       secret:
