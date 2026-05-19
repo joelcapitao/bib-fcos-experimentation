@@ -145,7 +145,8 @@ spec:
           readOnly: true
       script: |
         #!/bin/bash
-        set -euo pipefail
+        set -e
+        set -o verbose
 
         # ------------------------------------------------------------------
         # Resolve arch from platform (linux/x86_64 → x86_64)
@@ -186,6 +187,9 @@ spec:
 
         if [ "$SSH_HOST" == "localhost" ] ; then
           IS_LOCALHOST=true
+          export BUILD_DIR=/var/workdir
+          mkdir -p "${BUILD_DIR}/tekton-results"
+          cp -r "${HOME}/.docker/" "${BUILD_DIR}/.docker/"
           echo "Localhost detected; running build in cluster"
         elif [ -e "/ssh/otp" ]; then
           if ! curl --fail --cacert /ssh/otp-ca -XPOST -d @/ssh/otp "$(cat /ssh/otp-server)" >~/.ssh/id_rsa; then
