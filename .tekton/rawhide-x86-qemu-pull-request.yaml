@@ -6,6 +6,7 @@ metadata:
     build.appstudio.redhat.com/commit_sha: '{{revision}}'
     build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    pipelinesascode.tekton.dev/task: "[.tekton/tasks/image-builder.yaml]"
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch
@@ -29,6 +30,10 @@ spec:
     value: 5d
   - name: dockerfile
     value: Dockerfile
+  - name: artifact
+    value: qemu
+  - name: source-image
+    value: quay.io/fedora/fedora-coreos:rawhide
   pipelineSpec:
     description: |
       This pipeline is ideal for building container images from a Containerfile while maintaining trust after pipeline customization.
@@ -110,6 +115,12 @@ spec:
         VMs
       name: privileged-nested
       type: string
+    - description: Artifact type to build (e.g. "qemu", "metal").
+      name: artifact
+      type: string
+    - description: Fully qualified pullspec of the FCOS bootc container image.
+      name: source-image
+      type: string
     tasks:
     - name: init
       params:
@@ -148,6 +159,33 @@ spec:
       workspaces:
       - name: basic-auth
         workspace: git-auth
+    - name: build-images
+      runAfter:
+      - clone-repository
+      taskRef:
+        name: image-builder
+      params:
+      - name: PLATFORM
+        value: linux/x86_64
+      - name: ARTIFACT
+        value: $(params.artifact)
+      - name: SOURCE_IMAGE
+        value: $(params.source-image)
+      - name: OUTPUT_IMAGE
+        value: $(params.output-image)
+      - name: IMAGE_APPEND_PLATFORM
+        value: "true"
+      - name: SOURCE_ARTIFACT
+        value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
+    results:
+    - name: IMAGE_URL
+      value: $(tasks.build-images.results.IMAGE_URL)
+    - name: IMAGE_DIGEST
+      value: $(tasks.build-images.results.IMAGE_DIGEST)
+    - name: CHAINS-GIT_URL
+      value: $(tasks.clone-repository.results.url)
+    - name: CHAINS-GIT_COMMIT
+      value: $(tasks.clone-repository.results.commit)
   taskRunTemplate:
     serviceAccountName: build-pipeline-rawhide-x86-qemu
   workspaces:
