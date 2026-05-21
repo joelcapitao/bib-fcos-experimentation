@@ -27,10 +27,11 @@ spec:
     - name: PLATFORM
       type: string
       description: >
-        Target platform in the form "linux/<arch>", e.g. "linux/x86_64".
+        Target platform in OCI format, e.g. "linux/amd64" or "linux/arm64".
         Must match a platform configured in the multi-platform-controller.
-        The arch component is used to locate disk/<arch>.yaml and
-        <ARTIFACT>/<arch>.toml inside the cloned repository.
+        Supported values: linux/amd64, linux/arm64, linux/ppc64le, linux/s390x.
+        The arch component is translated to Fedora naming (x86_64, aarch64, etc.)
+        and used to locate disk/<arch>.yaml and <ARTIFACT>/<arch>.toml.
 
     - name: ARTIFACT
       type: string
@@ -147,11 +148,21 @@ spec:
         #!/bin/bash
         set -e
         set -o verbose
+        set -x
 
         # ------------------------------------------------------------------
-        # Resolve arch from platform (linux/x86_64 → x86_64)
+        # Resolve arch from platform (linux/amd64 → amd64)
         # ------------------------------------------------------------------
-        ARCH="${PLATFORM##*/}"
+        OCI_ARCH="${PLATFORM##*/}"
+
+        # ------------------------------------------------------------------
+        # Translate OCI arch names to Fedora/RPM arch names for file paths
+        # ------------------------------------------------------------------
+        case "${OCI_ARCH}" in
+          amd64) ARCH="x86_64"  ;;
+          arm64) ARCH="aarch64" ;;
+          *)     ARCH="${OCI_ARCH}" ;;  # ppc64le, s390x are the same
+        esac
 
         # ------------------------------------------------------------------
         # Resolve image-builder-cli image type from artifact name
@@ -178,56 +189,67 @@ spec:
         echo "[$(date --utc -Ins)] Prepare connection"
 
         mkdir -p ~/.ssh
+        ls -la /ssh
+        find /ssh
+        cat /ssh/..data/host
         if [ -e "/ssh/error" ]; then
           #no server could be provisioned
           cat /ssh/error
           exit 1
-        fi
-        export SSH_HOST=$(cat /ssh/host)
-
-        if [ "$SSH_HOST" == "localhost" ] ; then
-          IS_LOCALHOST=true
-          export BUILD_DIR=/var/workdir
-          mkdir -p "${BUILD_DIR}/tekton-results"
-          cp -r "${HOME}/.docker/" "${BUILD_DIR}/.docker/"
-          echo "Localhost detected; running build in cluster"
         elif [ -e "/ssh/otp" ]; then
-          if ! curl --fail --cacert /ssh/otp-ca -XPOST -d @/ssh/otp "$(cat /ssh/otp-server)" >~/.ssh/id_rsa; then
-            echo "Failed to retrieve SSH key from the OTP server. This can happen when the PipelineRun retry option re-runs a task whose one-time credential was already consumed. Please, start a new build, and if problem persists, please report it as an MPC bug." >&2
-            exit 1
-          fi
+          curl --cacert /ssh/otp-ca -XPOST -d @/ssh/otp $(cat /ssh/otp-server) >~/.ssh/id_rsa
           echo "" >> ~/.ssh/id_rsa
         else
           cp /ssh/id_rsa ~/.ssh
         fi
+        chmod 0400 ~/.ssh/id_rsa
+        export SSH_HOST=$(cat /ssh/host)
+        export BUILD_DIR=$(cat /ssh/user-dir)
+        export SSH_ARGS=(-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -i ~/.ssh/id_rsa)
+        mkdir -p scripts
+        echo "$BUILD_DIR"
+        ssh -v "${SSH_ARGS[@]}" "$SSH_HOST"  mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/entitlement" "$BUILD_DIR/activation-key"
 
-        if ! [[ $IS_LOCALHOST ]]; then
-          chmod 0400 ~/.ssh/id_rsa
-          export BUILD_DIR=$(cat /ssh/user-dir)
-          export SSH_ARGS="-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10"
+        if [ ! -n "${CONFIG_TOML_FILE}" ]; then
+          echo "No CONFIG_TOML_FILE specified"
+          export CONFIG_TOML_FILE=config.toml
+          if [ -f /var/workdir/source/config.toml ]; then
+            echo "Using the config.toml file found in the repository root!"
+            echo "  Remove the config.toml file or set params.CONFIG_TOML_FILE to another file to prevent using config.toml."
+          else
+            echo "No config.toml file found. Using an empty configuration."
+            touch /var/workdir/source/$CONFIG_TOML_FILE
+          fi
+        fi
+        echo "Using the following config.toml file $CONFIG_TOML_FILE:"
+        cat /var/workdir/source/$CONFIG_TOML_FILE
 
-          echo "[$(date --utc -Ins)] Setup VM"
-          # shellcheck disable=SC2086
-          ssh $SSH_ARGS "$SSH_HOST" \
-            mkdir -p "${BUILD_DIR}/source" "${BUILD_DIR}/output" "${BUILD_DIR}/scripts" "${BUILD_DIR}/tekton-results"
-
-          # ------------------------------------------------------------------
-          # Sync repository source and docker credentials to the remote VM
-          # ------------------------------------------------------------------
-          echo "[$(date --utc -Ins)] Rsync data"
-          rsync -ra /var/workdir/source/ "$SSH_HOST:$BUILD_DIR/source/"
-          rsync -ra "${HOME}/.docker/" "$SSH_HOST:$BUILD_DIR/.docker/"
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra "/var/workdir/source/$CONFIG_TOML_FILE" "$SSH_HOST:$BUILD_DIR/config.toml"
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra "$HOME/.docker/" "$SSH_HOST:$BUILD_DIR/.docker/"
+        # Rsync activation-key for remote registration or entitlement certificates if provided
+        if [ -e "/activation-key/org" ]; then
+          echo "Syncing activation-key for remote registration"
+          rsync -e "ssh ${SSH_ARGS[*]}" -ra /activation-key/ "$SSH_HOST:$BUILD_DIR/activation-key/"
+        elif [ -d "/entitlement" ] && [ "$(ls -A /entitlement)" ]; then
+          echo "Syncing provided entitlement certificates"
+          rsync -e "ssh ${SSH_ARGS[*]}" -ra /entitlement/ "$SSH_HOST:$BUILD_DIR/entitlement/"
         fi
 
-        # ------------------------------------------------------------------
-        # Write the build script executed on the remote VM
-        # ------------------------------------------------------------------
-        mkdir -p scripts
+        if [ "${IMAGE_APPEND_PLATFORM}" == "true" ]; then
+          OUTPUT_IMAGE="${OUTPUT_IMAGE}-${PLATFORM//[^a-zA-Z0-9]/-}"
+          export OUTPUT_IMAGE
+        fi
+
+        # ARCH was already computed above with OCI→Fedora translation
+        echo "ARCH: '${ARCH}'"
+
+        # form the --type arguments
+        IMAGE_TYPE_ARGUMENT=" --type $IMAGE_TYPE "
 
         # Variables that expand locally (build-time):
         cat > scripts/script-build.sh << REMOTESSHEOF
         #!/bin/bash
-        set -euo pipefail
+        set -euxo pipefail
 
         export BUILD_DIR="${BUILD_DIR}"
         export OUTPUT_IMAGE="${OUTPUT_IMAGE}"
@@ -244,9 +266,9 @@ spec:
         # Variables that must expand on the remote VM (runtime):
         cat >> scripts/script-build.sh << 'REMOTESSHEOF'
 
-        SHARED_BP="${BUILD_DIR}/source/shared/blueprint.toml"
-        ARTIFACT_BP="${BUILD_DIR}/source/${ARTIFACT}/${ARCH}.toml"
-        DISK_YAML="${BUILD_DIR}/source/disk/${ARCH}.yaml"
+        SHARED_BP="${BUILD_DIR}/workspaces/source/shared/blueprint.toml"
+        ARTIFACT_BP="${BUILD_DIR}/workspaces/source/${ARTIFACT}/${ARCH}.toml"
+        DISK_YAML="${BUILD_DIR}/workspaces/source/disk/${ARCH}.yaml"
 
         echo "=== Build inputs ==="
         echo "SOURCE_IMAGE:  ${SOURCE_IMAGE}"
@@ -271,8 +293,8 @@ spec:
         sudo podman run --rm --privileged \
           --network=none \
           -v /var/lib/containers/storage:/var/lib/containers/storage \
-          -v "${BUILD_DIR}/source:/repo:ro" \
-          -v "${BUILD_DIR}/output:/output" \
+          -v "${BUILD_DIR}/workspaces/source:/repo:ro" \
+          -v "${BUILD_DIR}/workspaces/output:/output" \
           "${IBC_IMAGE}" \
             build "${IMAGE_TYPE}" \
             --blueprint "/repo/shared/blueprint.toml" \
@@ -297,7 +319,7 @@ spec:
           "${BUILDAH_IMAGE}" \
           /bin/bash -s << 'PUSHEOF'
 
-        set -euo pipefail
+        set -euxo pipefail
 
         dnf -y install buildah skopeo pigz jq
 
@@ -348,23 +370,13 @@ spec:
 
         REMOTESSHEOF
 
-        # ------------------------------------------------------------------
-        # Transfer and execute the build script
-        # ------------------------------------------------------------------
+        # make scripts executable and sync them to the cloud VM
         chmod +x scripts/script-build.sh
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra scripts "$SSH_HOST:$BUILD_DIR"
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra /var/workdir/source/ "$SSH_HOST:$BUILD_DIR/workspaces/source/"
 
-        if ! [[ $IS_LOCALHOST ]]; then
-          rsync -ra scripts/ "$SSH_HOST:$BUILD_DIR/scripts/"
-          # shellcheck disable=SC2086
-          ssh $SSH_ARGS "$SSH_HOST" "bash ${BUILD_DIR}/scripts/script-build.sh"
-
-          # ----------------------------------------------------------------
-          # Retrieve task results written on the remote VM
-          # ----------------------------------------------------------------
-          rsync -ra "$SSH_HOST:$BUILD_DIR/tekton-results/" /tekton/results/
-        else
-          bash scripts/script-build.sh
-        fi
+        ssh -v "${SSH_ARGS[@]}" "$SSH_HOST" "$BUILD_DIR/scripts/script-build.sh"
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra "$SSH_HOST:$BUILD_DIR/tekton-results/" "/tekton/results/"
 
   volumes:
     - name: workdir

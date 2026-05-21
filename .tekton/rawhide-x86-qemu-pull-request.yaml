@@ -166,7 +166,7 @@ spec:
         name: image-builder
       params:
       - name: PLATFORM
-        value: linux/x86_64
+        value: linux/amd64
       - name: ARTIFACT
         value: $(params.artifact)
       - name: SOURCE_IMAGE
