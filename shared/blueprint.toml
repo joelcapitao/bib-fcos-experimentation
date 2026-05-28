@@ -10,5 +10,5 @@ empty = true
 # Source1: https://github.com/coreos/coreos-assembler/blob/af5d9c39d18741c560802ef5e2ccd23bc631e184/src/osbuild-manifests/build.common.ipp.yaml#L139-L144
 # Source2: https://github.com/coreos/fedora-coreos-config/blob/a9547d8c7b90decdd914c20becf56e5614e092bb/image-base.yaml#L10-L12
 [customizations.kernel]
-append = "rw, mitigations=auto,nosmt"
+append = "mitigations=auto,nosmt"
 
