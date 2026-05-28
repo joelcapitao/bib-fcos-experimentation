@@ -1,2 +1,4 @@
 output/
 .ai-git-pat
+*.qcow2
+*.raw
