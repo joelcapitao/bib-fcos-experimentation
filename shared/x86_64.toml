@@ -2,5 +2,5 @@
 # x86_64 artifacts
 # Source1: https://github.com/coreos/coreos-assembler/blob/af5d9c39d18741c560802ef5e2ccd23bc631e184/src/osbuild-manifests/build.common.ipp.yaml#L143
 [customizations.kernel]
-append = "$ignition.firstboot"
+append = "$ignition_firstboot"
 
