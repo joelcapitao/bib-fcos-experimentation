@@ -17,6 +17,12 @@ which introduced the ability to use `bootc install to-filesystem` for FCOS image
  4. Develop and iterate on an image-builder Tekton task for Konflux.
  5. Develop an automated workflow with Konflux and its facilities
 
+## Requirements
+
+ 1. We aim to not define any custom tekton task and use only upstream vetted tasks.
+    We treat konflux as a black-box that we don't own, in order to conform with coforma-compliance
+    policies.
+
 ## Repository structure
 
 ```
