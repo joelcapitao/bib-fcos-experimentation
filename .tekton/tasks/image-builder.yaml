@@ -20,6 +20,10 @@ metadata:
         <ARTIFACT>/<arch>.toml        — platform + console kargs (merged last)
         disk/<arch>.yaml              — partition table
 
+      Before building, merge-blueprints.py merges the layered blueprint
+      files into a single blueprint-merged.toml (concatenating kernel
+      arguments) so that image-builder-cli receives one --blueprint flag.
+
       The produced disk image is wrapped as an OCI artifact and pushed to
       OUTPUT_IMAGE, with IMAGE_REFERENCE emitted as a task result so that the
       build-image-index task can assemble the multi-arch manifest.
@@ -323,9 +327,11 @@ spec:
         # Variables that must expand on the remote VM (runtime):
         cat >> scripts/script-build.sh << 'REMOTESSHEOF'
 
-        SHARED_BP="${BUILD_DIR}/workspaces/source/shared/blueprint.toml"
-        SHARED_ARCH_BP="${BUILD_DIR}/workspaces/source/shared/${ARCH}.toml"
-        ARTIFACT_BP="${BUILD_DIR}/workspaces/source/${ARTIFACT}/${ARCH}.toml"
+        REPO_DIR="${BUILD_DIR}/workspaces/source"
+        SHARED_BP="${REPO_DIR}/shared/blueprint.toml"
+        SHARED_ARCH_BP="${REPO_DIR}/shared/${ARCH}.toml"
+        ARTIFACT_BP="${REPO_DIR}/${ARTIFACT}/${ARCH}.toml"
+        MERGED_BP="${REPO_DIR}/blueprint-merged.toml"
 
         echo "=== Build inputs ==="
         echo "SOURCE_IMAGE:   ${SOURCE_IMAGE}"
@@ -344,12 +350,19 @@ spec:
           fi
         done
 
-        # Build the optional shared arch blueprint flag
-        SHARED_ARCH_BP_FLAG=""
+        # Merge blueprints into a single file.
+        # Order: shared base → shared arch-specific (optional) → artifact.
+        BP_FILES=("${SHARED_BP}")
         if [ -f "${SHARED_ARCH_BP}" ]; then
           echo "Using shared arch blueprint: ${SHARED_ARCH_BP}"
-          SHARED_ARCH_BP_FLAG="--blueprint /repo/shared/${ARCH}.toml"
+          BP_FILES+=("${SHARED_ARCH_BP}")
         fi
+        BP_FILES+=("${ARTIFACT_BP}")
+
+        echo "Merging blueprints: ${BP_FILES[*]}"
+        python3 "${REPO_DIR}/merge-blueprints.py" -o "${MERGED_BP}" "${BP_FILES[@]}"
+        echo "=== Merged blueprint ==="
+        cat "${MERGED_BP}"
 
         # Pull the image-builder-cli runner image
         podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${IBC_IMAGE}"
@@ -367,9 +380,7 @@ spec:
             build "${IMAGE_TYPE}" \
             --bootc-build-ref "${BUILDER_IMAGE}" \
             --bootc-ref "${SOURCE_IMAGE}" \
-            --blueprint "/repo/shared/blueprint.toml" \
-            ${SHARED_ARCH_BP_FLAG} \
-            --blueprint "/repo/${ARTIFACT}/${ARCH}.toml" \
+            --blueprint "/repo/blueprint-merged.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
             --with-buildlog
