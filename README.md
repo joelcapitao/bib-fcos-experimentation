@@ -21,6 +21,7 @@ which introduced the ability to use `bootc install to-filesystem` for FCOS image
 
 ```
 .
+├── merge-blueprints.py  # Merges layered blueprints into one (concatenates kernel args)
 ├── shared/
 │   ├── blueprint.toml   # Common blueprint: image name + ignition firstboot marker
 │   └── 00-fcos.toml     # bootc install config: stateroot, mount specs, fs type
@@ -49,11 +50,15 @@ which introduced the ability to use `bootc install to-filesystem` for FCOS image
 - **`disk/`** is the single source of truth for partition tables, one file per
   architecture. The partition table is never duplicated.
 
-- **Blueprints are layered** and merged by image-builder-cli at build time:
+- **Blueprints are layered** and merged by `merge-blueprints.py` before the
+  build. The script deep-merges TOML files in order, with one special rule:
+  `customizations.kernel.append` values are **concatenated** (space-separated)
+  instead of overridden, so kernel arguments accumulate across layers.
   1. `shared/blueprint.toml` — config common to every image (ignition firstboot, name)
-  2. `<artifact>/<arch>.toml` — platform ID and arch-specific console kargs
+  2. `shared/<arch>.toml` *(optional)* — arch-specific shared kargs
+  3. `<artifact>/<arch>.toml` — platform ID and arch-specific console kargs
 
-  Future variants (e.g. `debug`) add a third layer by placing a
+  Future variants (e.g. `debug`) add a fourth layer by placing a
   `<artifact>/<arch>/<variant>.toml` with only the extra kargs.
 
 - Each `<artifact>/<arch>.toml` is explicit and self-contained — every arch has
@@ -85,10 +90,13 @@ alias ibc='sudo podman run --rm --privileged \
            -v .:/srv \
            ghcr.io/osbuild/image-builder-cli:latest'
 
-# Build a specific (artifact, arch, variant) combination.
-# Blueprints are merged in order: shared → artifact/arch → variant (if any).
-#
-# Example: qemu image for x86_64, base variant
+# Merge blueprints in order: shared → shared/arch (optional) → artifact/arch.
+# Example: qemu image for x86_64
+./merge-blueprints.py -o blueprint-merged.toml \
+    shared/blueprint.toml \
+    shared/x86_64.toml \
+    qemu/x86_64.toml
+
 ibc build qcow2 \
           --bootc-build-ref $BUILDER \
           --bootc-ref $TARGET_FCOS_IMAGE \
@@ -97,8 +105,7 @@ ibc build qcow2 \
           --with-buildlog \
           --with-manifest \
           --with-metrics \
-          --blueprint /srv/shared/blueprint.toml \
-          --blueprint /srv/qemu/x86_64.toml
+          --blueprint /srv/blueprint-merged.toml
 
 # Boot the image with cosa
 cosa run -c --qemu-image output/fedora-coreos/fedora-coreos-rawhide.qcow2
@@ -117,7 +124,15 @@ Create `<artifact>/<arch>/<variant>.toml` with only the extra kargs:
 append = "systemd.log_level=debug"
 ```
 
-Then pass it as a third `--blueprint` flag after the arch-level one.
+Then add it as the last argument to `merge-blueprints.py`:
+
+```bash
+./merge-blueprints.py -o blueprint-merged.toml \
+    shared/blueprint.toml \
+    shared/x86_64.toml \
+    qemu/x86_64.toml \
+    qemu/x86_64/debug.toml
+```
 
 ### Console karg reference
 
