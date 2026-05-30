@@ -152,7 +152,7 @@ spec:
     # 2. Parse image-builder config file and export variables for the build.
     # -------------------------------------------------------------------------
     - name: validate-config
-      image: quay.io/konflux-ci/task-runner:1.6.0@sha256:1abfe4e50d4e961d0fd9790202565f93ee650fe8dfc50932c94989acba10485f
+      image: quay.io/konflux-ci/task-runner:1.7.0@sha256:1c0582a85dae0949f3ec94aca95695c5d7698b371f1b76c5a78822a6249073dc
       computeResources:
         limits:
           memory: 64Mi
