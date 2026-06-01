@@ -3,19 +3,19 @@ kind: Task
 metadata:
   name: image-builder
   labels:
-    app.kubernetes.io/version: "0.1"
+    app.kubernetes.io/version: "0.2"
     build.appstudio.redhat.com/build_type: disk-image
   annotations:
     tekton.dev/tags: "image-build, konflux, fcos"
     tekton.dev/description: >
-      Build a Fedora CoreOS disk image using image-builder-cli running on an
-      arch-native remote VM provisioned by the Konflux multi-platform-controller.
+      Build multiple Fedora CoreOS disk images using image-builder-cli running
+      on an arch-native remote VM provisioned by the Konflux multi-platform-controller.
+
+      This task builds all specified artifacts (e.g. qemu, metal) for a single
+      architecture in the same VM, then creates an OCI index where each artifact
+      is identified by platform.os=<artifact> and platform.architecture=<arch>.
 
       Blueprints and disk layout are read directly from the cloned repository.
-      The arch is derived from the PLATFORM param, and the artifact name
-      (e.g. "qemu", "metal") determines which pre-merged blueprint to use:
-
-        blueprints/generated/<ARTIFACT>-<arch>.toml
 
       These merged blueprints are generated from the layered source files
       in blueprints/sources/ (shared/base.toml, shared/<arch>.toml,
@@ -24,9 +24,14 @@ metadata:
       committed to the repository. A GitHub Actions workflow verifies they
       stay in sync with the source layers.
 
-      The produced disk image is wrapped as an OCI artifact and pushed to
-      OUTPUT_IMAGE, with IMAGE_REFERENCE emitted as a task result so that the
-      build-image-index task can assemble the multi-arch manifest.
+      The produced disk images are wrapped as OCI artifacts and assembled into
+      an OCI index, pushed to OUTPUT_IMAGE. The index uses custom platform values
+      (e.g. platform.os=qemu, platform.architecture=amd64) to identify each artifact.
+
+      Artifacts without blueprints for the target arch are silently skipped.
+      If one artifact fails to build, the task continues with the others (best-effort).
+      The task fails only if no artifacts are successfully built.
+
 spec:
   params:
     - name: PLATFORM
@@ -36,15 +41,15 @@ spec:
         Must match a platform configured in the multi-platform-controller.
         Supported values: linux/amd64, linux/arm64, linux/ppc64le, linux/s390x.
         The arch component is translated to Fedora naming (x86_64, aarch64, etc.)
-        and used to locate disk/<arch>.yaml and <ARTIFACT>/<arch>.toml.
+        and used to locate disk/<arch>.yaml and <artifact>/<arch>.toml.
 
-    - name: ARTIFACT
-      type: string
+    - name: ARTIFACTS
+      type: array
       description: >
-        Artifact type to build. Must match a top-level directory in the
-        repository that contains per-arch blueprints (e.g. "qemu", "metal").
+        List of artifact types to build. Each must match a top-level directory
+        in the repository that contains per-arch blueprints (e.g. "qemu", "metal").
         Controls the image type passed to image-builder-cli and the blueprint
-        path used.
+        path used. Artifacts without blueprints for the target arch are skipped.
 
     - name: SOURCE_IMAGE
       type: string
@@ -57,17 +62,17 @@ spec:
     - name: OUTPUT_IMAGE
       type: string
       description: >
-        Target OCI image reference where the disk image artifact will be pushed,
-        with the platform suffix appended, e.g.
-        quay.io/redhat-user-workloads/fcos-tenant/fcos-qemu:rawhide-linux-x86-64
+        Target OCI image reference where the OCI index will be pushed.
+        Individual artifacts are pushed with temporary tags (<OUTPUT_IMAGE>-<artifact>)
+        and then combined into the final index at OUTPUT_IMAGE.
+        e.g. quay.io/redhat-user-workloads/fcos-tenant/fcos-disk:rawhide
 
-    - name: IMAGE_APPEND_PLATFORM
+    - name: ORAS_IMAGE
       type: string
-      default: "true"
+      default: "ghcr.io/oras-project/oras:v1.3.0@sha256:6ce045ce069a89934d6666b8b49f9c4c0145201bd6de6dbe2aee267814c55468"
       description: >
-        Append a sanitised platform suffix to the OUTPUT_IMAGE tag
-        (e.g. "-linux-x86-64"). Set to "false" when the tag already includes
-        the arch.
+        OCI image for the oras CLI tool, used to push artifacts with custom
+        platform metadata and create the OCI index.
 
     - name: SOURCE_ARTIFACT
       type: string
@@ -100,34 +105,34 @@ spec:
 
   results:
     - name: IMAGE_DIGEST
-      description: Digest of the OCI artifact pushed to the registry.
+      description: Digest of the OCI index pushed to the registry.
     - name: IMAGE_URL
-      description: Repository and tag where the OCI artifact was pushed.
+      description: Repository and tag where the OCI index was pushed.
     - name: IMAGE_REFERENCE
       description: >
-        Full image reference (IMAGE_URL@IMAGE_DIGEST). Used by build-image-index
-        to assemble the multi-arch manifest list.
+        Full image reference (IMAGE_URL@IMAGE_DIGEST). Used by build-disk-image-index
+        to assemble the final multi-arch manifest list.
+    - name: BUILD_REPORT
+      description: >
+        JSON object reporting the build status of each artifact:
+        {"built": ["qemu", "metal"], "skipped": ["aws"], "failed": []}
 
   stepTemplate:
     env:
       - name: PLATFORM
         value: $(params.PLATFORM)
-      - name: ARTIFACT
-        value: $(params.ARTIFACT)
       - name: SOURCE_IMAGE
         value: $(params.SOURCE_IMAGE)
       - name: OUTPUT_IMAGE
         value: $(params.OUTPUT_IMAGE)
-      - name: IMAGE_APPEND_PLATFORM
-        value: $(params.IMAGE_APPEND_PLATFORM)
       - name: IMAGE_BUILDER_CONFIG_FILE
         value: $(params.IMAGE_BUILDER_CONFIG_FILE)
       - name: OUTPUT_NAME
         value: $(params.OUTPUT_NAME)
       - name: STORAGE_DRIVER
         value: $(params.STORAGE_DRIVER)
-      - name: BUILDAH_IMAGE
-        value: 'registry.access.redhat.com/ubi9/buildah:9.7-1777422883'
+      - name: ORAS_IMAGE
+        value: $(params.ORAS_IMAGE)
     volumeMounts:
       - name: workdir
         mountPath: /var/workdir
@@ -190,7 +195,7 @@ spec:
         cat /var/workdir/config-vars
 
     # -------------------------------------------------------------------------
-    # 3. Build and push the disk image on the arch-native remote VM.
+    # 3. Build and push multiple disk images on the arch-native remote VM.
     # -------------------------------------------------------------------------
     - name: build
       image: quay.io/konflux-ci/buildah-task:latest@sha256:4c470b5a153c4acd14bf4f8731b5e36c61d7faafe09c2bf376bb81ce84aa5709
@@ -204,6 +209,7 @@ spec:
         - name: ssh
           mountPath: /ssh
           readOnly: true
+      args: ["$(params.ARTIFACTS[*])"]
       script: |
         #!/bin/bash
         set -e
@@ -230,25 +236,6 @@ spec:
         esac
 
         # ------------------------------------------------------------------
-        # Resolve image-builder-cli image type from artifact name
-        # ------------------------------------------------------------------
-        case "${ARTIFACT}" in
-          qemu)  IMAGE_TYPE="qcow2" ;;
-          metal) IMAGE_TYPE="raw"   ;;
-          *)
-            echo "Unknown ARTIFACT '${ARTIFACT}'. Add it to the case statement."
-            exit 1
-            ;;
-        esac
-
-        # ------------------------------------------------------------------
-        # Optionally append platform suffix to the output tag
-        # ------------------------------------------------------------------
-        if [ "${IMAGE_APPEND_PLATFORM}" = "true" ]; then
-          OUTPUT_IMAGE="${OUTPUT_IMAGE}-${PLATFORM//[^a-zA-Z0-9]/-}"
-        fi
-
-        # ------------------------------------------------------------------
         # Set up SSH access to the remote VM
         # ------------------------------------------------------------------
         echo "[$(date --utc -Ins)] Prepare connection"
@@ -268,11 +255,11 @@ spec:
         fi
         chmod 0400 ~/.ssh/id_rsa
         export SSH_HOST=$(cat /ssh/host)
-        export BUILD_DIR="$(cat /ssh/user-dir)/${ARTIFACT}"
+        export BUILD_DIR="$(cat /ssh/user-dir)/disk-images"
         export SSH_ARGS=(-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -i ~/.ssh/id_rsa)
         mkdir -p scripts
         echo "$BUILD_DIR"
-        ssh "${SSH_ARGS[@]}" "$SSH_HOST"  mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/entitlement" "$BUILD_DIR/activation-key"
+        ssh "${SSH_ARGS[@]}" "$SSH_HOST" mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/entitlement" "$BUILD_DIR/activation-key"
 
         if [ ! -n "${CONFIG_TOML_FILE}" ]; then
           echo "No CONFIG_TOML_FILE specified"
@@ -299,16 +286,19 @@ spec:
           rsync -e "ssh ${SSH_ARGS[*]}" -ra /entitlement/ "$SSH_HOST:$BUILD_DIR/entitlement/"
         fi
 
-        # ARCH was already computed above with OCI→Fedora translation
         echo "ARCH: '${ARCH}'"
+        echo "OCI_ARCH: '${OCI_ARCH}'"
+        echo "ARTIFACTS: $@"
 
-        # form the --type arguments
-        IMAGE_TYPE_ARGUMENT=" --type $IMAGE_TYPE "
+        # Write artifacts list to a file for the remote script
+        printf '%s\n' "$@" > /var/workdir/artifacts.txt
+
+        rsync -e "ssh ${SSH_ARGS[*]}" -ra /var/workdir/artifacts.txt "$SSH_HOST:$BUILD_DIR/artifacts.txt"
 
         # Variables that expand locally (build-time):
         cat > scripts/script-build.sh << REMOTESSHEOF
         #!/bin/bash
-        set -euxo pipefail
+        set -uo pipefail
 
         export BUILD_DIR="${BUILD_DIR}"
         export OUTPUT_IMAGE="${OUTPUT_IMAGE}"
@@ -316,11 +306,9 @@ spec:
         export BUILDER_IMAGE="${BUILDER_IMAGE}"
         export OUTPUT_NAME="${OUTPUT_NAME}"
         export IBC_IMAGE="${IBC_IMAGE}"
-        export IMAGE_TYPE="${IMAGE_TYPE}"
+        export ORAS_IMAGE="${ORAS_IMAGE}"
         export ARCH="${ARCH}"
-        export ARTIFACT="${ARTIFACT}"
-        export BUILDAH_IMAGE="${BUILDAH_IMAGE}"
-        export STORAGE_DRIVER="${STORAGE_DRIVER}"
+        export OCI_ARCH="${OCI_ARCH}"
 
         REMOTESSHEOF
 
@@ -330,12 +318,18 @@ spec:
         REPO_DIR="${BUILD_DIR}/workspaces/source"
         MERGED_BP="${REPO_DIR}/blueprints/generated/${ARTIFACT}-${ARCH}.toml"
 
-        echo "=== Build inputs ==="
+        # Read artifacts list
+        mapfile -t ARTIFACTS < "${BUILD_DIR}/artifacts.txt"
+
+        echo "=== Build Configuration ==="
         echo "SOURCE_IMAGE:   ${SOURCE_IMAGE}"
         echo "BUILDER_IMAGE:  ${BUILDER_IMAGE}"
-        echo "IMAGE_TYPE:     ${IMAGE_TYPE}"
         echo "OUTPUT_IMAGE:   ${OUTPUT_IMAGE}"
         echo "OUTPUT_NAME:    ${OUTPUT_NAME}"
+        echo "Blueprint:      ${MERGED_BP}"
+        echo "ARCH:           ${ARCH}"
+        echo "OCI_ARCH:       ${OCI_ARCH}"
+        echo "ARTIFACTS:      ${ARTIFACTS[*]}"
         echo "Blueprint:      ${MERGED_BP}"
 
         if [ ! -f "${MERGED_BP}" ]; then
@@ -344,7 +338,7 @@ spec:
           exit 1
         fi
 
-        echo "=== Pre-merged blueprint ==="
+        echo "=== Blueprint ==="
         cat "${MERGED_BP}"
 
         # Pull all container images to ensure we always use the latest versions.
@@ -352,100 +346,193 @@ spec:
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${IBC_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${SOURCE_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${ORAS_IMAGE}"
 
         # create the output dir (clean any leftovers from a previous run)
         rm -rf "${BUILD_DIR}/output"
         mkdir "${BUILD_DIR}/output"
 
-        # Run image-builder-cli inside a privileged container.
-        # Use flock to serialize concurrent builds on the same VM, avoiding
-        # /dev/loop conflicts. Drop this lock when each pipeline gets its own VM.
-        LOCKFILE="/tmp/image-builder.lock"
-        echo "Waiting for lock on ${LOCKFILE} ..."
-        exec 9>"${LOCKFILE}"
-        flock 9
-        echo "Lock acquired, starting build."
+        # Initialize build report
+        BUILD_REPORT='{"built":[],"skipped":[],"failed":[]}'
+        BUILT_ARTIFACTS=()
 
-        sudo podman run --rm --privileged --pull=never \
-          -v /var/lib/containers/storage:/var/lib/containers/storage \
-          -v "${BUILD_DIR}/workspaces/source:/repo:ro" \
-          -v "${BUILD_DIR}/output:/output" \
-          "${IBC_IMAGE}" \
+        # ------------------------------------------------------------------
+        # Build each artifact
+        # ------------------------------------------------------------------
+        for artifact in "${ARTIFACTS[@]}"; do
+          echo ""
+          echo "============================================================"
+          echo "=== Processing artifact: ${artifact} for ${ARCH}"
+          echo "============================================================"
+
+          ARTIFACT_BP="${REPO_DIR}/${artifact}/${ARCH}.toml"
+
+          # Skip if no blueprint for this arch
+          if [ ! -f "${ARTIFACT_BP}" ]; then
+            echo "INFO: Skipping ${artifact} (no blueprint for ${ARCH})"
+            BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".skipped += [\"$artifact\"]")
+            continue
+          fi
+
+          # Determine image type based on artifact
+          case "${artifact}" in
+            qemu)  IMAGE_TYPE="qcow2"; EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
+            metal) IMAGE_TYPE="raw";   EXT="raw";   MEDIA_TYPE="application/vnd.diskimage.raw.gzip" ;;
+            *)     IMAGE_TYPE="qcow2"; EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
+          esac
+
+          echo "IMAGE_TYPE: ${IMAGE_TYPE}"
+          echo "MEDIA_TYPE: ${MEDIA_TYPE}"
+
+          # Merge blueprints into a single file
+          MERGED_BP="${REPO_DIR}/blueprint-merged-${artifact}.toml"
+          BP_FILES=("${SHARED_BP}")
+          if [ -f "${SHARED_ARCH_BP}" ]; then
+            echo "Using shared arch blueprint: ${SHARED_ARCH_BP}"
+            BP_FILES+=("${SHARED_ARCH_BP}")
+          fi
+          BP_FILES+=("${ARTIFACT_BP}")
+
+          echo "Merging blueprints: ${BP_FILES[*]}"
+          python3 "${REPO_DIR}/merge-blueprints.py" -o "${MERGED_BP}" "${BP_FILES[@]}"
+          echo "=== Merged blueprint for ${artifact} ==="
+          cat "${MERGED_BP}"
+
+          # Create output directory for this artifact
+          OUTPUT_DIR="${BUILD_DIR}/output/${artifact}"
+          rm -rf "${OUTPUT_DIR}"
+          mkdir -p "${OUTPUT_DIR}"
+
+          # Run image-builder-cli
+          echo "=== Building ${artifact} disk image ==="
+          if ! sudo podman run --rm --privileged \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            -v "${REPO_DIR}:/repo:ro" \
+            -v "${OUTPUT_DIR}:/output" \
+            "${IBC_IMAGE}" \
             build "${IMAGE_TYPE}" \
             --bootc-build-ref "${BUILDER_IMAGE}" \
             --bootc-ref "${SOURCE_IMAGE}" \
-            --blueprint "/repo/blueprints/generated/${ARTIFACT}-${ARCH}.toml" \
+            --blueprint "/repo/blueprint-merged-${artifact}.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
-            --with-buildlog
+            --with-buildlog; then
 
-        # Release the lock
-        flock -u 9
-        exec 9>&-
-        echo "Lock released."
+            echo "ERROR: Failed to build ${artifact}"
+            BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".failed += [\"$artifact\"]")
+            continue  # Best-effort: continue with other artifacts
+          fi
 
-        echo "=== Build complete, output contents ==="
-        ls -lhR "${BUILD_DIR}/output/"
+          echo "=== Build complete for ${artifact}, output contents ==="
+          ls -lhR "${OUTPUT_DIR}/"
 
-        # ------------------------------------------------------------------
-        # Wrap the disk image as an OCI artifact and push it.
-        # Run inside a container so we don't install anything on the VM.
-        # ------------------------------------------------------------------
-        sudo podman run --rm --privileged \
-          -e "OUTPUT_IMAGE=${OUTPUT_IMAGE}" \
-          -e "STORAGE_DRIVER=${STORAGE_DRIVER}" \
-          -v "${BUILD_DIR}/output:/output" \
-          -v "${BUILD_DIR}/.docker:/.docker:ro" \
-          -v "${BUILD_DIR}/tekton-results:/tekton-results" \
-          "${BUILDAH_IMAGE}" \
-          /bin/bash -c '
-        set -euxo pipefail
+          # Fix permissions for files created by image-builder-cli (runs as root)
+          # This ensures oras container can read the files
+          sudo chmod -R a+r "${OUTPUT_DIR}/"
 
-        dnf -y -q install jq skopeo
+          # Find the disk image file
+          DISK_FILE=$(find "${OUTPUT_DIR}" -name "*.${EXT}" -print -quit)
+          if [ -z "${DISK_FILE}" ]; then
+            echo "ERROR: No ${EXT} file found for ${artifact}"
+            BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".failed += [\"$artifact\"]")
+            continue
+          fi
 
-        buildah manifest create "${OUTPUT_IMAGE}"
+          # Compress raw images
+          if [ "${IMAGE_TYPE}" = "raw" ]; then
+            echo "Compressing raw image..."
+            sudo gzip "${DISK_FILE}"
+            DISK_FILE="${DISK_FILE}.gz"
+            # Fix permissions after compression
+            sudo chmod a+r "${DISK_FILE}"
+          fi
 
-        QCOW2_FILE="$(find /output -name "*.qcow2" -print -quit)"
-        RAW_FILE="$(find /output -name "*.raw" -print -quit)"
+          # Push artifact with oras using custom platform
+          ARTIFACT_TAG="${OUTPUT_IMAGE}-${artifact}"
+          echo "=== Pushing ${artifact} to ${ARTIFACT_TAG} with platform ${artifact}/${OCI_ARCH} ==="
 
-        if [ -n "${QCOW2_FILE}" ]; then
-          echo "Pushing qcow2 artifact: ${QCOW2_FILE}"
-          buildah manifest add --arch "$(arch)" --os linux \
-            --artifact --artifact-type application/vnd.diskimage.qcow2 \
-            "${OUTPUT_IMAGE}" "${QCOW2_FILE}"
+          # Get just the filename for oras
+          DISK_FILENAME=$(basename "${DISK_FILE}")
 
-        elif [ -n "${RAW_FILE}" ]; then
-          echo "Compressing and pushing raw artifact: ${RAW_FILE}"
-          gzip -f "${RAW_FILE}"
-          buildah manifest add --arch "$(arch)" --os linux \
-            --artifact --artifact-type application/vnd.diskimage.raw.gzip \
-            "${OUTPUT_IMAGE}" "${RAW_FILE}.gz"
+          if ! sudo podman run --rm \
+            -v "${OUTPUT_DIR}:/output:ro" \
+            -v "${BUILD_DIR}/.docker:/root/.docker:ro" \
+            -w /output \
+            "${ORAS_IMAGE}" \
+            push \
+            --artifact-type "${MEDIA_TYPE}" \
+            --artifact-platform "${artifact}/${OCI_ARCH}" \
+            "${ARTIFACT_TAG}" \
+            "${DISK_FILENAME}"; then
 
-        else
-          echo "ERROR: no recognised disk image found under /output"
-          ls -lhR /output
+            echo "ERROR: Failed to push ${artifact}"
+            BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".failed += [\"$artifact\"]")
+            continue
+          fi
+
+          echo "SUCCESS: ${artifact} pushed to ${ARTIFACT_TAG}"
+          BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".built += [\"$artifact\"]")
+          BUILT_ARTIFACTS+=("${artifact}")
+        done
+
+        echo ""
+        echo "============================================================"
+        echo "=== Build Summary ==="
+        echo "============================================================"
+        echo "$BUILD_REPORT" | jq .
+
+        # Verify at least one artifact was built
+        BUILT_COUNT=$(echo "$BUILD_REPORT" | jq '.built | length')
+        if [ "$BUILT_COUNT" -eq 0 ]; then
+          echo "ERROR: No artifacts built successfully"
           exit 1
         fi
 
-        buildah manifest push \
-          --digestfile /tekton-results/image-index-digest \
-          --authfile /.docker/config.json \
-          --all "${OUTPUT_IMAGE}"
+        # ------------------------------------------------------------------
+        # Create OCI index with all built artifacts
+        # ------------------------------------------------------------------
+        echo ""
+        echo "============================================================"
+        echo "=== Creating OCI index ==="
+        echo "============================================================"
 
-        INDEX_DIGEST="$(cat /tekton-results/image-index-digest)"
-        REPO="${OUTPUT_IMAGE%:*}"
-        MANIFEST_DIGEST="$(buildah manifest inspect --authfile /.docker/config.json "${REPO}@${INDEX_DIGEST}" \
-          | jq -r ".manifests[0].digest")"
+        # Build the list of artifact references for oras manifest index create
+        MANIFEST_REFS=()
+        for artifact in "${BUILT_ARTIFACTS[@]}"; do
+          MANIFEST_REFS+=("${OUTPUT_IMAGE}-${artifact}")
+        done
 
-        skopeo copy \
-          --authfile /.docker/config.json \
-          "docker://${REPO}@${MANIFEST_DIGEST}" \
-          "docker://${OUTPUT_IMAGE}"
+        echo "Creating index from: ${MANIFEST_REFS[*]}"
 
-        echo -n "${OUTPUT_IMAGE}"    | tee /tekton-results/IMAGE_URL
-        echo -n "${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_DIGEST
-        echo -n "${OUTPUT_IMAGE}@${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_REFERENCE
-        '
+        # Create the index
+        if ! sudo podman run --rm \
+          -v "${BUILD_DIR}/.docker:/root/.docker:ro" \
+          "${ORAS_IMAGE}" \
+          manifest index create \
+          "${OUTPUT_IMAGE}" \
+          "${MANIFEST_REFS[@]}"; then
+
+          echo "ERROR: Failed to create OCI index"
+          exit 1
+        fi
+
+        echo "=== OCI index created at ${OUTPUT_IMAGE} ==="
+
+        # Get the index digest
+        INDEX_DIGEST=$(sudo podman run --rm \
+          -v "${BUILD_DIR}/.docker:/root/.docker:ro" \
+          "${ORAS_IMAGE}" \
+          manifest fetch "${OUTPUT_IMAGE}" --descriptor | jq -r '.digest')
+
+        echo "INDEX_DIGEST: ${INDEX_DIGEST}"
+
+        # Write results
+        echo -n "${OUTPUT_IMAGE}" > "${BUILD_DIR}/tekton-results/IMAGE_URL"
+        echo -n "${INDEX_DIGEST}" > "${BUILD_DIR}/tekton-results/IMAGE_DIGEST"
+        echo -n "${OUTPUT_IMAGE}@${INDEX_DIGEST}" > "${BUILD_DIR}/tekton-results/IMAGE_REFERENCE"
+        echo "$BUILD_REPORT" > "${BUILD_DIR}/tekton-results/BUILD_REPORT"
+
+        echo "=== All done ==="
 
         REMOTESSHEOF
 

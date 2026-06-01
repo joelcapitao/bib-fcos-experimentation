@@ -1,0 +1,229 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build-disk-image-index
+  labels:
+    app.kubernetes.io/version: "0.1"
+    build.appstudio.redhat.com/build_type: disk-image
+  annotations:
+    tekton.dev/tags: "image-build, konflux, fcos"
+    tekton.dev/description: >
+      Combine multiple per-architecture OCI indexes into a single multi-arch
+      OCI index for Fedora CoreOS disk images.
+
+      This task takes Image Index references (one per architecture) and combines
+      them into a single OCI index. Each input index contains multiple artifacts
+      (e.g. qemu, metal) identified by platform.os=<artifact>.
+
+      The final index allows pulling specific artifacts with:
+        oras pull --platform qemu/amd64 <registry>/<repo>:<tag>
+        oras pull --platform metal/arm64 <registry>/<repo>:<tag>
+
+      Inspired by Konflux build-image-index task but adapted for disk image
+      artifacts with custom platform metadata.
+spec:
+  params:
+    - name: IMAGE
+      type: string
+      description: >
+        The target image and tag where the final OCI index will be pushed.
+        e.g. quay.io/coreos/fcos-disk:rawhide
+
+    - name: IMAGES
+      type: array
+      description: >
+        List of Image Index references to be combined into the final index.
+        Each should be a full reference with digest (repo:tag@sha256:...).
+        These are typically the outputs from multiple image-builder task runs
+        (one per architecture).
+
+    - name: TLSVERIFY
+      type: string
+      default: "true"
+      description: >
+        Verify TLS on the registry endpoint.
+
+    - name: ALWAYS_BUILD_INDEX
+      type: string
+      default: "true"
+      description: >
+        Build an image index even if IMAGES contains only one element.
+        If false and only one image is provided, that image reference is
+        forwarded directly to the results.
+
+    - name: ORAS_IMAGE
+      type: string
+      default: "ghcr.io/oras-project/oras:v1.3.0@sha256:6ce045ce069a89934d6666b8b49f9c4c0145201bd6de6dbe2aee267814c55468"
+      description: >
+        OCI image for the oras CLI tool.
+
+  results:
+    - name: IMAGE_DIGEST
+      description: Digest of the OCI index just built.
+    - name: IMAGE_URL
+      description: Image repository and tag where the built index was pushed.
+    - name: IMAGE_REF
+      description: >
+        Image reference of the built index containing both the repository
+        and the digest (e.g. quay.io/org/repo@sha256:abc123...).
+    - name: IMAGES
+      description: >
+        Comma-separated list of all image manifests referenced by the index.
+
+  stepTemplate:
+    env:
+      - name: IMAGE
+        value: $(params.IMAGE)
+      - name: TLSVERIFY
+        value: $(params.TLSVERIFY)
+      - name: ALWAYS_BUILD_INDEX
+        value: $(params.ALWAYS_BUILD_INDEX)
+      - name: ORAS_IMAGE
+        value: $(params.ORAS_IMAGE)
+
+  steps:
+    - name: build-index
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:4c470b5a153c4acd14bf4f8731b5e36c61d7faafe09c2bf376bb81ce84aa5709
+      computeResources:
+        limits:
+          memory: 512Mi
+        requests:
+          cpu: 100m
+          memory: 256Mi
+      args: ["$(params.IMAGES[*])"]
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        echo "=== Build Disk Image Index ==="
+        echo "IMAGE: ${IMAGE}"
+        echo "TLSVERIFY: ${TLSVERIFY}"
+        echo "ALWAYS_BUILD_INDEX: ${ALWAYS_BUILD_INDEX}"
+        echo "Input images: $@"
+
+        # Collect input images into array
+        IMAGES=("$@")
+        IMAGE_COUNT=${#IMAGES[@]}
+
+        echo "Number of input images: ${IMAGE_COUNT}"
+
+        # Handle single image case
+        if [ "${IMAGE_COUNT}" -eq 1 ] && [ "${ALWAYS_BUILD_INDEX}" != "true" ]; then
+          echo "Only one image provided and ALWAYS_BUILD_INDEX is not true."
+          echo "Forwarding single image reference to results."
+
+          SINGLE_IMAGE="${IMAGES[0]}"
+
+          # Parse the image reference
+          if [[ "${SINGLE_IMAGE}" == *"@"* ]]; then
+            # Format: repo:tag@sha256:digest
+            IMAGE_URL="${SINGLE_IMAGE%@*}"
+            IMAGE_DIGEST="${SINGLE_IMAGE#*@}"
+          else
+            # Format: repo:tag (need to fetch digest)
+            IMAGE_URL="${SINGLE_IMAGE}"
+            IMAGE_DIGEST=$(podman run --rm \
+              -v "$HOME/.docker:/root/.docker:ro" \
+              "${ORAS_IMAGE}" \
+              manifest fetch "${SINGLE_IMAGE}" --descriptor | jq -r '.digest')
+          fi
+
+          echo -n "${IMAGE_URL}" | tee "$(results.IMAGE_URL.path)"
+          echo -n "${IMAGE_DIGEST}" | tee "$(results.IMAGE_DIGEST.path)"
+          echo -n "${IMAGE_URL}@${IMAGE_DIGEST}" | tee "$(results.IMAGE_REF.path)"
+          echo -n "${SINGLE_IMAGE}" | tee "$(results.IMAGES.path)"
+          exit 0
+        fi
+
+        # Build TLS args
+        TLS_ARGS=""
+        if [ "${TLSVERIFY}" != "true" ]; then
+          TLS_ARGS="--insecure"
+        fi
+
+        echo "=== Creating OCI index from ${IMAGE_COUNT} images ==="
+
+        # For now, with a single architecture, we can simply copy/tag the index
+        # When we have multiple architectures, we'll need to merge the indexes
+        #
+        # With oras, we can create a new index that references all the manifests
+        # from the input indexes. However, oras manifest index create expects
+        # individual manifest references, not indexes.
+        #
+        # For the multi-arch case, we need to:
+        # 1. Fetch each input index
+        # 2. Extract all manifest references from each index
+        # 3. Create a new index with all manifests
+
+        if [ "${IMAGE_COUNT}" -eq 1 ]; then
+          # Single image: just copy/tag it to the target
+          echo "Copying single index to ${IMAGE}"
+
+          podman run --rm \
+            -v "$HOME/.docker:/root/.docker:ro" \
+            "${ORAS_IMAGE}" \
+            cp ${TLS_ARGS} \
+            "${IMAGES[0]}" \
+            "${IMAGE}"
+        else
+          # Multiple images: need to merge indexes
+          echo "Merging ${IMAGE_COUNT} indexes..."
+
+          # Collect all manifest references from all input indexes
+          ALL_MANIFESTS=()
+
+          for input_image in "${IMAGES[@]}"; do
+            echo "Fetching manifests from: ${input_image}"
+
+            # Fetch the index and extract manifest references
+            MANIFESTS=$(podman run --rm \
+              -v "$HOME/.docker:/root/.docker:ro" \
+              "${ORAS_IMAGE}" \
+              manifest fetch ${TLS_ARGS} "${input_image}" | \
+              jq -r '.manifests[] | "\(.digest)"')
+
+            # Get the repository from the input image
+            REPO="${input_image%%:*}"
+            if [[ "${input_image}" == *"@"* ]]; then
+              REPO="${input_image%%@*}"
+              REPO="${REPO%%:*}"
+            fi
+
+            for digest in ${MANIFESTS}; do
+              ALL_MANIFESTS+=("${REPO}@${digest}")
+            done
+          done
+
+          echo "Total manifests to include: ${#ALL_MANIFESTS[@]}"
+          echo "Manifests: ${ALL_MANIFESTS[*]}"
+
+          # Create the merged index
+          podman run --rm \
+            -v "$HOME/.docker:/root/.docker:ro" \
+            "${ORAS_IMAGE}" \
+            manifest index create ${TLS_ARGS} \
+            "${IMAGE}" \
+            "${ALL_MANIFESTS[@]}"
+        fi
+
+        echo "=== Index created at ${IMAGE} ==="
+
+        # Get the index digest
+        INDEX_DIGEST=$(podman run --rm \
+          -v "$HOME/.docker:/root/.docker:ro" \
+          "${ORAS_IMAGE}" \
+          manifest fetch ${TLS_ARGS} "${IMAGE}" --descriptor | jq -r '.digest')
+
+        echo "INDEX_DIGEST: ${INDEX_DIGEST}"
+
+        # Write results
+        echo -n "${IMAGE}" | tee "$(results.IMAGE_URL.path)"
+        echo -n "${INDEX_DIGEST}" | tee "$(results.IMAGE_DIGEST.path)"
+        echo -n "${IMAGE}@${INDEX_DIGEST}" | tee "$(results.IMAGE_REF.path)"
+
+        # Build comma-separated list of input images
+        IMAGES_CSV=$(IFS=,; echo "${IMAGES[*]}")
+        echo -n "${IMAGES_CSV}" | tee "$(results.IMAGES.path)"
+
+        echo ""
+        echo "=== Done ==="
