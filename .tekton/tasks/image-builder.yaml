@@ -352,6 +352,39 @@ spec:
         rm -rf "${BUILD_DIR}/output"
         mkdir "${BUILD_DIR}/output"
 
+        # Login to registry with oras
+        # oras requires explicit login for Quay registries
+        # Extract registry host and path from OUTPUT_IMAGE
+        # e.g., quay.io/konflux-fedora/coreos-tenant/disk-images-rawhide:tag
+        #   -> REGISTRY_HOST: quay.io
+        #   -> REGISTRY_PATH: quay.io/konflux-fedora/coreos-tenant/disk-images-rawhide
+        REGISTRY_HOST=$(echo "${OUTPUT_IMAGE}" | cut -d'/' -f1)
+        REGISTRY_PATH="${OUTPUT_IMAGE%%:*}"
+        echo "=== Logging into registry ${REGISTRY_HOST} with oras ==="
+        echo "Looking up auth for: ${REGISTRY_PATH}"
+
+        # Extract auth from config.json and decode it
+        # The config.json has format: {"auths": {"quay.io/org/repo": {"auth": "base64(user:pass)"}}}
+        AUTH_B64=$(jq -r ".auths[\"${REGISTRY_PATH}\"].auth // empty" "${BUILD_DIR}/.docker/config.json")
+
+        if [ -n "${AUTH_B64}" ]; then
+          AUTH_DECODED=$(echo "${AUTH_B64}" | base64 -d)
+          ORAS_USER="${AUTH_DECODED%%:*}"
+          ORAS_PASS="${AUTH_DECODED#*:}"
+
+          echo "${ORAS_PASS}" | sudo podman run --rm -i \
+            -v "${BUILD_DIR}/.docker:/root/.docker" \
+            "${ORAS_IMAGE}" \
+            login \
+            --username "${ORAS_USER}" \
+            --password-stdin \
+            "${REGISTRY_HOST}"
+        else
+          echo "WARNING: No auth found for ${REGISTRY_PATH} in config.json"
+          echo "Available registries:"
+          jq -r '.auths | keys[]' "${BUILD_DIR}/.docker/config.json"
+        fi
+
         # Initialize build report
         BUILD_REPORT='{"built":[],"skipped":[],"failed":[]}'
         BUILT_ARTIFACTS=()
