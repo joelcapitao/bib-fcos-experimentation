@@ -447,6 +447,7 @@ spec:
             -w "/output" \
             "${ORAS_IMAGE}" \
             push \
+            --registry-config /root/.docker/config.json \
             --artifact-type "${MEDIA_TYPE}" \
             --artifact-platform "${artifact}/${OCI_ARCH}" \
             "${ARTIFACT_TAG}" \
@@ -496,6 +497,7 @@ spec:
           -v "${BUILD_DIR}/.docker:/root/.docker:ro" \
           "${ORAS_IMAGE}" \
           manifest index create \
+          --registry-config /root/.docker/config.json \
           "${OUTPUT_IMAGE}" \
           "${MANIFEST_REFS[@]}"; then
 
@@ -509,7 +511,9 @@ spec:
         INDEX_DIGEST=$(sudo podman run --rm \
           -v "${BUILD_DIR}/.docker:/root/.docker:ro" \
           "${ORAS_IMAGE}" \
-          manifest fetch "${OUTPUT_IMAGE}" --descriptor | jq -r '.digest')
+          manifest fetch \
+          --registry-config /root/.docker/config.json \
+          "${OUTPUT_IMAGE}" --descriptor | jq -r '.digest')
 
         echo "INDEX_DIGEST: ${INDEX_DIGEST}"
 
