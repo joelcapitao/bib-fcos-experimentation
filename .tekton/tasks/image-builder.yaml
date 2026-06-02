@@ -426,25 +426,12 @@ spec:
           echo "=== Build complete for ${artifact}, output contents ==="
           ls -lhR "${OUTPUT_DIR}/"
 
-          # Fix permissions for files created by image-builder-cli (runs as root)
-          # This ensures oras container can read the files
-          sudo chmod -R a+r "${OUTPUT_DIR}/"
-
           # Find the disk image file
           DISK_FILE=$(find "${OUTPUT_DIR}" -name "*.${EXT}" -print -quit)
           if [ -z "${DISK_FILE}" ]; then
             echo "ERROR: No ${EXT} file found for ${artifact}"
             BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".failed += [\"$artifact\"]")
             continue
-          fi
-
-          # Compress raw images
-          if [ "${IMAGE_TYPE}" = "raw" ]; then
-            echo "Compressing raw image..."
-            sudo gzip "${DISK_FILE}"
-            DISK_FILE="${DISK_FILE}.gz"
-            # Fix permissions after compression
-            sudo chmod a+r "${DISK_FILE}"
           fi
 
           # Push artifact with oras using custom platform
@@ -455,9 +442,9 @@ spec:
           DISK_FILENAME=$(basename "${DISK_FILE}")
 
           if ! sudo podman run --rm \
-            -v "${OUTPUT_DIR}:/output:ro" \
+            -v "${OUTPUT_DIR}:/output:z" \
             -v "${BUILD_DIR}/.docker:/root/.docker:ro" \
-            -w /output \
+            -w "/output" \
             "${ORAS_IMAGE}" \
             push \
             --artifact-type "${MEDIA_TYPE}" \
