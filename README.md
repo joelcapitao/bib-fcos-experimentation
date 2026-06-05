@@ -78,11 +78,8 @@ which introduced the ability to use `bootc install to-filesystem` for FCOS image
 ## Usage
 
 ```bash
-TARGET_FCOS_IMAGE=localhost/fcos-with-image-builder
+TARGET_FCOS_IMAGE=quay.io/fedora/fedora-coreos:rawhide
 BUILDER=quay.io/bootc-devel/fedora-bootc-rawhide-standard
-
-# Build the FCOS image
-sudo podman build -f Containerfile -t $TARGET_FCOS_IMAGE
 
 # verify the bootc configuration
 sudo podman run --rm $TARGET_FCOS_IMAGE bootc install print-configuration | jq
