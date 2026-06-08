@@ -1,0 +1,4 @@
+# Platform: openstack — ppc64le
+# Canonical source: https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml
+[customizations.kernel]
+append = "ignition.platform.id=openstack console=hvc0 console=tty0"

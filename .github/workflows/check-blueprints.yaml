@@ -1,0 +1,25 @@
+name: Check generated blueprints
+on:
+  pull_request:
+    paths:
+      - "blueprints/**"
+      - ".github/merge-blueprints.py"
+
+jobs:
+  check-blueprints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate merged blueprints
+        run: python3 .github/merge-blueprints.py --generate-all
+
+      - name: Check for uncommitted changes
+        run: |
+          if ! git diff --exit-code blueprints/generated/; then
+            echo ""
+            echo "ERROR: Generated blueprints are out of date."
+            echo "Run 'python3 .github/merge-blueprints.py --generate-all' and commit the result."
+            exit 1
+          fi
+          echo "Generated blueprints are up to date."

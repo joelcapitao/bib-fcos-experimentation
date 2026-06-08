@@ -1,0 +1,11 @@
+name = "Fedora CoreOS"
+
+[customizations]
+
+[customizations.ignition]
+
+[customizations.ignition.firstboot]
+empty = true
+
+[customizations.kernel]
+append = "mitigations=auto,nosmt $ignition_firstboot ignition.platform.id=azure console=tty0 console=ttyS0,115200n8"

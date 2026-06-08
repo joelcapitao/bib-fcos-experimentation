@@ -7,6 +7,7 @@ Standard deep-merge (last-wins) with one special rule:
 
 Usage:
     merge-blueprints.py [-o OUTPUT] BLUEPRINT [BLUEPRINT ...]
+    merge-blueprints.py --generate-all [-d OUTDIR] [--repo-root ROOT]
 
 Examples:
     # Print merged result to stdout
@@ -14,12 +15,16 @@ Examples:
 
     # Write to a file
     merge-blueprints.py -o merged.toml shared/blueprint.toml qemu/aarch64.toml
+
+    # Generate all artifact/arch combinations
+    merge-blueprints.py --generate-all
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+from pathlib import Path
 import sys
 import tomllib
 
@@ -131,13 +136,82 @@ def _escape(s: str) -> str:
     )
 
 
+# Platform directories that contain per-arch blueprint layers.
+_PLATFORM_DIRS = [
+    "applehv",
+    "aws",
+    "azure",
+    "gcp",
+    "hetzner",
+    "ibmcloud",
+    "kubevirt",
+    "metal",
+    "openstack",
+    "oraclecloud",
+    "proxmoxve",
+    "qemu",
+    "virtualbox",
+    "vmware",
+]
+
+# Known architectures (filenames without .toml extension).
+_KNOWN_ARCHES = ["aarch64", "ppc64le", "riscv64", "s390x", "x86_64"]
+
+
+def generate_all(repo_root: Path, out_dir: Path) -> list[Path]:
+    """Generate merged blueprints for every platform/arch combination.
+
+    For each (platform, arch) pair where
+    ``blueprints/sources/<platform>/<arch>.toml`` exists, the following
+    layers are merged:
+
+      blueprints/sources/shared/base.toml    — always included (base)
+      blueprints/sources/shared/<arch>.toml   — included if it exists
+      blueprints/sources/<platform>/<arch>.toml — platform + arch layer
+
+    Output files are written to ``out_dir/<platform>-<arch>.toml``.
+    Returns the list of files written.
+    """
+    sources = repo_root / "blueprints" / "sources"
+    shared_base = sources / "shared" / "base.toml"
+    if not shared_base.exists():
+        print(f"ERROR: shared base blueprint not found: {shared_base}", file=sys.stderr)
+        sys.exit(1)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+
+    for platform in _PLATFORM_DIRS:
+        for arch in _KNOWN_ARCHES:
+            arch_file = sources / platform / f"{arch}.toml"
+            if not arch_file.exists():
+                continue
+
+            # Build the ordered list of blueprint layers.
+            layers = [str(shared_base)]
+            shared_arch = sources / "shared" / f"{arch}.toml"
+            if shared_arch.exists():
+                layers.append(str(shared_arch))
+            layers.append(str(arch_file))
+
+            merged = merge_blueprints(layers)
+            out_file = out_dir / f"{platform}-{arch}.toml"
+            with open(out_file, "w") as f:
+                f.write(_format_toml(merged))
+
+            print(f"  {out_file}")
+            written.append(out_file)
+
+    return written
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Merge image-builder blueprint TOML files."
     )
     parser.add_argument(
         "blueprints",
-        nargs="+",
+        nargs="*",
         metavar="BLUEPRINT",
         help="blueprint TOML files in merge order (first = base)",
     )
@@ -147,16 +221,45 @@ def main() -> None:
         default=None,
         help="write merged blueprint to OUTPUT (default: stdout)",
     )
+    parser.add_argument(
+        "--generate-all",
+        action="store_true",
+        help="generate merged blueprints for every artifact/arch combination",
+    )
+    parser.add_argument(
+        "-d",
+        "--outdir",
+        default=None,
+        help="output directory for --generate-all (default: blueprints/generated)",
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=None,
+        help="repository root (default: parent of directory containing this script)",
+    )
     args = parser.parse_args()
 
-    merged = merge_blueprints(args.blueprints)
-    toml_str = _format_toml(merged)
-
-    if args.output:
-        with open(args.output, "w") as f:
-            f.write(toml_str)
+    if args.generate_all:
+        repo_root = Path(args.repo_root) if args.repo_root else Path(__file__).resolve().parent.parent
+        out_dir = Path(args.outdir) if args.outdir else repo_root / "blueprints" / "generated"
+        print(f"Generating all merged blueprints into {out_dir}/")
+        written = generate_all(repo_root, out_dir)
+        if not written:
+            print("WARNING: no blueprint combinations found.", file=sys.stderr)
+            sys.exit(1)
+        print(f"Done — {len(written)} file(s) written.")
     else:
-        sys.stdout.write(toml_str)
+        if not args.blueprints:
+            parser.error("the following arguments are required: BLUEPRINT (or use --generate-all)")
+
+        merged = merge_blueprints(args.blueprints)
+        toml_str = _format_toml(merged)
+
+        if args.output:
+            with open(args.output, "w") as f:
+                f.write(toml_str)
+        else:
+            sys.stdout.write(toml_str)
 
 
 if __name__ == "__main__":

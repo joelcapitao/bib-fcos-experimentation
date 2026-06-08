@@ -13,16 +13,16 @@ metadata:
 
       Blueprints and disk layout are read directly from the cloned repository.
       The arch is derived from the PLATFORM param, and the artifact name
-      (e.g. "qemu", "metal") determines which subdirectory to read from:
+      (e.g. "qemu", "metal") determines which pre-merged blueprint to use:
 
-        shared/blueprint.toml         — common config (merged first)
-        shared/<arch>.toml            — arch-specific shared config (optional, merged second)
-        <ARTIFACT>/<arch>.toml        — platform + console kargs (merged last)
-        disk/<arch>.yaml              — partition table
+        blueprints/generated/<ARTIFACT>-<arch>.toml
 
-      Before building, merge-blueprints.py merges the layered blueprint
-      files into a single blueprint-merged.toml (concatenating kernel
-      arguments) so that image-builder-cli receives one --blueprint flag.
+      These merged blueprints are generated from the layered source files
+      in blueprints/sources/ (shared/base.toml, shared/<arch>.toml,
+      <ARTIFACT>/<arch>.toml) by running
+      ``.github/merge-blueprints.py --generate-all`` and must be
+      committed to the repository. A GitHub Actions workflow verifies they
+      stay in sync with the source layers.
 
       The produced disk image is wrapped as an OCI artifact and pushed to
       OUTPUT_IMAGE, with IMAGE_REFERENCE emitted as a task result so that the
@@ -328,10 +328,7 @@ spec:
         cat >> scripts/script-build.sh << 'REMOTESSHEOF'
 
         REPO_DIR="${BUILD_DIR}/workspaces/source"
-        SHARED_BP="${REPO_DIR}/shared/blueprint.toml"
-        SHARED_ARCH_BP="${REPO_DIR}/shared/${ARCH}.toml"
-        ARTIFACT_BP="${REPO_DIR}/${ARTIFACT}/${ARCH}.toml"
-        MERGED_BP="${REPO_DIR}/blueprint-merged.toml"
+        MERGED_BP="${REPO_DIR}/blueprints/generated/${ARTIFACT}-${ARCH}.toml"
 
         echo "=== Build inputs ==="
         echo "SOURCE_IMAGE:   ${SOURCE_IMAGE}"
@@ -339,29 +336,15 @@ spec:
         echo "IMAGE_TYPE:     ${IMAGE_TYPE}"
         echo "OUTPUT_IMAGE:   ${OUTPUT_IMAGE}"
         echo "OUTPUT_NAME:    ${OUTPUT_NAME}"
-        echo "Blueprint:      ${SHARED_BP}"
-        echo "Arch blueprint: ${SHARED_ARCH_BP} (optional)"
-        echo "Artifact bp:    ${ARTIFACT_BP}"
+        echo "Blueprint:      ${MERGED_BP}"
 
-        for f in "${SHARED_BP}" "${ARTIFACT_BP}"; do
-          if [ ! -f "${f}" ]; then
-            echo "ERROR: required file not found: ${f}"
-            exit 1
-          fi
-        done
-
-        # Merge blueprints into a single file.
-        # Order: shared base → shared arch-specific (optional) → artifact.
-        BP_FILES=("${SHARED_BP}")
-        if [ -f "${SHARED_ARCH_BP}" ]; then
-          echo "Using shared arch blueprint: ${SHARED_ARCH_BP}"
-          BP_FILES+=("${SHARED_ARCH_BP}")
+        if [ ! -f "${MERGED_BP}" ]; then
+          echo "ERROR: pre-merged blueprint not found: ${MERGED_BP}"
+          echo "Run 'python3 .github/merge-blueprints.py --generate-all' and commit the result."
+          exit 1
         fi
-        BP_FILES+=("${ARTIFACT_BP}")
 
-        echo "Merging blueprints: ${BP_FILES[*]}"
-        python3 "${REPO_DIR}/merge-blueprints.py" -o "${MERGED_BP}" "${BP_FILES[@]}"
-        echo "=== Merged blueprint ==="
+        echo "=== Pre-merged blueprint ==="
         cat "${MERGED_BP}"
 
         # Pull all container images to ensure we always use the latest versions.
@@ -391,7 +374,7 @@ spec:
             build "${IMAGE_TYPE}" \
             --bootc-build-ref "${BUILDER_IMAGE}" \
             --bootc-ref "${SOURCE_IMAGE}" \
-            --blueprint "/repo/blueprint-merged.toml" \
+            --blueprint "/repo/blueprints/generated/${ARTIFACT}-${ARCH}.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
             --with-buildlog

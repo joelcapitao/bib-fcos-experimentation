@@ -1,0 +1,9 @@
+# Platform: virtualbox — x86_64
+# Canonical source: https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml
+[customizations.kernel]
+append = "ignition.platform.id=virtualbox console=ttyS0,115200n8 console=tty0"
+
+[customizations.bootloader.grub2]
+terminal_input = ["serial", "console"]
+terminal_output = ["serial", "console"]
+serial = "serial --speed=115200"

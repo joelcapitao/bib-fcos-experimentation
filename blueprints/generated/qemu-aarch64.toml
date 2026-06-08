@@ -1,0 +1,18 @@
+name = "Fedora CoreOS"
+
+[customizations]
+
+[customizations.ignition]
+
+[customizations.ignition.firstboot]
+empty = true
+
+[customizations.kernel]
+append = "mitigations=auto,nosmt ignition.platform.id=qemu"
+
+[customizations.bootloader]
+
+[customizations.bootloader.grub2]
+terminal_input = ["serial", "console"]
+terminal_output = ["serial", "console"]
+serial = "serial --speed=115200"
