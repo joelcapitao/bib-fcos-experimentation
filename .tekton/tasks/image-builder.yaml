@@ -364,15 +364,18 @@ spec:
         echo "=== Merged blueprint ==="
         cat "${MERGED_BP}"
 
-        # Pull the image-builder-cli runner image
-        podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${IBC_IMAGE}"
+        # Pull all container images to ensure we always use the latest versions.
+        # The remote VM may have stale cached images from previous runs.
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${IBC_IMAGE}"
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${SOURCE_IMAGE}"
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
 
         # create the output dir (clean any leftovers from a previous run)
         rm -rf "${BUILD_DIR}/output"
         mkdir "${BUILD_DIR}/output"
 
         # Run image-builder-cli inside a privileged container.
-        sudo podman run --rm --privileged \
+        sudo podman run --rm --privileged --pull=never \
           -v /var/lib/containers/storage:/var/lib/containers/storage \
           -v "${BUILD_DIR}/workspaces/source:/repo:ro" \
           -v "${BUILD_DIR}/output:/output" \
