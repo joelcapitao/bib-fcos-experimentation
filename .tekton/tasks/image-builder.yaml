@@ -416,7 +416,7 @@ spec:
 
         elif [ -n "${RAW_FILE}" ]; then
           echo "Compressing and pushing raw artifact: ${RAW_FILE}"
-          gzip "${RAW_FILE}"
+          gzip -f "${RAW_FILE}"
           buildah manifest add --arch "$(arch)" --os linux \
             --artifact --artifact-type application/vnd.diskimage.raw.gzip \
             "${OUTPUT_IMAGE}" "${RAW_FILE}.gz"
@@ -456,6 +456,15 @@ spec:
 
         ssh "${SSH_ARGS[@]}" "$SSH_HOST" "$BUILD_DIR/scripts/script-build.sh"
         rsync -e "ssh ${SSH_ARGS[*]}" -ra "$SSH_HOST:$BUILD_DIR/tekton-results/" "/tekton/results/"
+
+        # ------------------------------------------------------------------
+        # Clean up all build artifacts on the remote VM to prevent stale
+        # files from interfering with subsequent runs (e.g. gzip refusing
+        # to overwrite an existing .gz file).
+        # ------------------------------------------------------------------
+        echo "[$(date --utc -Ins)] Cleaning up build artifacts on remote VM"
+        ssh "${SSH_ARGS[@]}" "$SSH_HOST" "rm -rf ${BUILD_DIR}/output ${BUILD_DIR}/workspaces ${BUILD_DIR}/scripts ${BUILD_DIR}/tekton-results ${BUILD_DIR}/config.toml ${BUILD_DIR}/.docker ${BUILD_DIR}/entitlement ${BUILD_DIR}/activation-key ${BUILD_DIR}/tmp"
+        echo "[$(date --utc -Ins)] Cleanup complete"
 
   volumes:
     - name: workdir
