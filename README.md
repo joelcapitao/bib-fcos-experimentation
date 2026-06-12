@@ -27,53 +27,57 @@ which introduced the ability to use `bootc install to-filesystem` for FCOS image
 
 ```
 .
-├── merge-blueprints.py  # Merges layered blueprints into one (concatenates kernel args)
-├── shared/
-│   ├── blueprint.toml   # Common blueprint: image name + ignition firstboot marker
-│   └── 00-fcos.toml     # bootc install config: stateroot, mount specs, fs type
+├── .github/
+│   ├── merge-blueprints.py       # Merges layered blueprints into one (concatenates kernel args)
+│   └── workflows/
+│       └── check-blueprints.yaml # CI: ensures generated blueprints are up to date
 │
-├── disk/
-│   ├── x86_64.yaml      # GPT layout: BIOS-BOOT + EFI + boot + root
-│   ├── aarch64.yaml     # GPT layout: reserved + EFI + boot + root
-│   ├── ppc64le.yaml     # GPT layout: PReP + reserved + boot + root
-│   └── s390x.yaml       # GPT layout: boot (p3) + root (p4)
+├── .tekton/                      # Konflux/Tekton pipeline definitions
+│   ├── rawhide-x86-*-{pull-request,push}.yaml
+│   └── tasks/
+│       └── image-builder.yaml    # Tekton task for image-builder-cli
 │
-├── qemu/                # Artifact: qcow2 image for QEMU
-│   ├── x86_64.toml      # ignition.platform.id=qemu + tty0/ttyS0 console
-│   ├── aarch64.toml     # ignition.platform.id=qemu
-│   ├── ppc64le.toml     # ignition.platform.id=qemu + hvc0/tty0 console
-│   └── s390x.toml       # ignition.platform.id=qemu
+├── blueprints/
+│   ├── sources/                  # Source blueprint layers (hand-edited)
+│   │   ├── shared/
+│   │   │   ├── base.toml         # Common blueprint: image name, ignition firstboot, shared kargs
+│   │   │   └── x86_64.toml      # Arch-specific shared kargs (e.g. $ignition_firstboot)
+│   │   ├── qemu/                 # One dir per platform
+│   │   │   ├── x86_64.toml      # ignition.platform.id + console kargs + grub config
+│   │   │   ├── aarch64.toml
+│   │   │   └── ...
+│   │   ├── metal/
+│   │   ├── aws/
+│   │   └── ...                   # applehv, azure, gcp, hetzner, ibmcloud, kubevirt,
+│   │                             # openstack, oraclecloud, proxmoxve, virtualbox, vmware
+│   └── generated/                # Auto-generated merged blueprints (do not edit)
+│       ├── qemu-x86_64.toml
+│       ├── metal-aarch64.toml
+│       └── ...                   # One file per platform-arch combination
 │
-└── metal/               # Artifact: raw image for bare metal
-    ├── x86_64.toml      # ignition.platform.id=metal
-    ├── aarch64.toml     # ignition.platform.id=metal
-    ├── ppc64le.toml     # ignition.platform.id=metal
-    └── s390x.toml       # ignition.platform.id=metal
+├── image-builder-config.yaml     # Builder and CLI image references
+└── platforms.yaml                # Canonical console kargs per arch/platform (reference)
 ```
 
 ### Design principles
 
-- **`disk/`** is the single source of truth for partition tables, one file per
-  architecture. The partition table is never duplicated.
-
-- **Blueprints are layered** and merged by `merge-blueprints.py` before the
-  build. The script deep-merges TOML files in order, with one special rule:
+- **Blueprints are layered** and merged by `.github/merge-blueprints.py`.
+  The script deep-merges TOML files in order, with one special rule:
   `customizations.kernel.append` values are **concatenated** (space-separated)
   instead of overridden, so kernel arguments accumulate across layers.
-  1. `shared/blueprint.toml` — config common to every image (ignition firstboot, name)
-  2. `shared/<arch>.toml` *(optional)* — arch-specific shared kargs
-  3. `<artifact>/<arch>.toml` — platform ID and arch-specific console kargs
+  1. `blueprints/sources/shared/base.toml` — config common to every image (ignition firstboot, name, shared kargs)
+  2. `blueprints/sources/shared/<arch>.toml` *(optional)* — arch-specific shared kargs
+  3. `blueprints/sources/<platform>/<arch>.toml` — platform ID, console kargs, and grub config
 
-  Future variants (e.g. `debug`) add a fourth layer by placing a
-  `<artifact>/<arch>/<variant>.toml` with only the extra kargs.
+  Future variants (e.g. `debug`) can add a fourth layer.
 
-- Each `<artifact>/<arch>.toml` is explicit and self-contained — every arch has
+- Each `<platform>/<arch>.toml` is explicit and self-contained — every arch has
   its own file even when the kargs happen to be identical.
 
-- The `shared/00-fcos.toml` file is a bootc install configuration that must be
-  present inside the target container image at
-  `/usr/lib/bootc/install/00-fcos.toml`. This is tracked here for reference
-  and will eventually be upstreamed into `fedora-coreos-config` overlays.d.
+- **`blueprints/generated/`** contains pre-merged blueprints (one per
+  platform-arch combination) produced by `merge-blueprints.py --generate-all`.
+  These files are committed to the repo and validated by CI — do not edit
+  them by hand.
 
 ## Usage
 
@@ -93,12 +97,14 @@ alias ibc='sudo podman run --rm --privileged \
            -v .:/srv \
            ghcr.io/osbuild/image-builder-cli:latest'
 
-# Merge blueprints in order: shared → shared/arch (optional) → artifact/arch.
-# Example: qemu image for x86_64
-./merge-blueprints.py -o blueprint-merged.toml \
-    shared/blueprint.toml \
-    shared/x86_64.toml \
-    qemu/x86_64.toml
+# Regenerate all merged blueprints (sources → generated)
+python3 .github/merge-blueprints.py --generate-all
+
+# Or merge specific layers manually:
+python3 .github/merge-blueprints.py -o blueprint-merged.toml \
+    blueprints/sources/shared/base.toml \
+    blueprints/sources/shared/x86_64.toml \
+    blueprints/sources/qemu/x86_64.toml
 
 ibc build qcow2 \
           --bootc-build-ref $BUILDER \
@@ -108,7 +114,7 @@ ibc build qcow2 \
           --with-buildlog \
           --with-manifest \
           --with-metrics \
-          --blueprint /srv/blueprint-merged.toml
+          --blueprint /srv/blueprints/generated/qemu-x86_64.toml
 
 # Boot the image with cosa
 cosa run -c --qemu-image output/fedora-coreos/fedora-coreos-rawhide.qcow2
@@ -117,25 +123,14 @@ cosa run -c --qemu-image output/fedora-coreos/fedora-coreos-rawhide.qcow2
 kola run --qemu-image output/fedora-coreos/fedora-coreos-rawhide.qcow2
 ```
 
-### Adding a new variant
+### Adding a new platform
 
-Create `<artifact>/<arch>/<variant>.toml` with only the extra kargs:
+1. Create `blueprints/sources/<platform>/<arch>.toml` for each supported arch.
+2. Add the platform name to `_PLATFORM_DIRS` in `.github/merge-blueprints.py`.
+3. Regenerate: `python3 .github/merge-blueprints.py --generate-all`
+4. Commit both the source and the generated files.
 
-```toml
-# Example: qemu/x86_64/debug.toml
-[customizations.kernel]
-append = "systemd.log_level=debug"
-```
-
-Then add it as the last argument to `merge-blueprints.py`:
-
-```bash
-./merge-blueprints.py -o blueprint-merged.toml \
-    shared/blueprint.toml \
-    shared/x86_64.toml \
-    qemu/x86_64.toml \
-    qemu/x86_64/debug.toml
-```
+CI (`check-blueprints.yaml`) will fail if generated files are out of date.
 
 ### Console karg reference
 
