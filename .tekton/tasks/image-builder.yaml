@@ -235,6 +235,7 @@ spec:
         case "${ARTIFACT}" in
           qemu)  IMAGE_TYPE="qcow2" ;;
           metal) IMAGE_TYPE="raw"   ;;
+          vmware) IMAGE_TYPE="ova"   ;;
           *)
             echo "Unknown ARTIFACT '${ARTIFACT}'. Add it to the case statement."
             exit 1
