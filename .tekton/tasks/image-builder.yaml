@@ -347,25 +347,11 @@ spec:
         echo "=== Pre-merged blueprint ==="
         cat "${MERGED_BP}"
 
-        # Pull all container images to ensure we always use the latest versions.
-        # The remote VM may have stale cached images from previous runs.
-        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${IBC_IMAGE}"
-        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${SOURCE_IMAGE}"
-        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
-
         # create the output dir (clean any leftovers from a previous run)
         rm -rf "${BUILD_DIR}/output"
         mkdir "${BUILD_DIR}/output"
 
         # Run image-builder-cli inside a privileged container.
-        # Use flock to serialize concurrent builds on the same VM, avoiding
-        # /dev/loop conflicts. Drop this lock when each pipeline gets its own VM.
-        LOCKFILE="/tmp/image-builder.lock"
-        echo "Waiting for lock on ${LOCKFILE} ..."
-        exec 9>"${LOCKFILE}"
-        flock 9
-        echo "Lock acquired, starting build."
-
         sudo podman run --rm --privileged --pull=never \
           -v /var/lib/containers/storage:/var/lib/containers/storage \
           -v "${BUILD_DIR}/workspaces/source:/repo:ro" \
@@ -378,11 +364,6 @@ spec:
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
             --with-buildlog
-
-        # Release the lock
-        flock -u 9
-        exec 9>&-
-        echo "Lock released."
 
         echo "=== Build complete, output contents ==="
         ls -lhR "${BUILD_DIR}/output/"
@@ -457,20 +438,11 @@ spec:
         ssh "${SSH_ARGS[@]}" "$SSH_HOST" "$BUILD_DIR/scripts/script-build.sh"
         rsync -e "ssh ${SSH_ARGS[*]}" -ra "$SSH_HOST:$BUILD_DIR/tekton-results/" "/tekton/results/"
 
-        # ------------------------------------------------------------------
-        # Clean up all build artifacts on the remote VM to prevent stale
-        # files from interfering with subsequent runs (e.g. gzip refusing
-        # to overwrite an existing .gz file).
-        # ------------------------------------------------------------------
-        echo "[$(date --utc -Ins)] Cleaning up build artifacts on remote VM"
-        ssh "${SSH_ARGS[@]}" "$SSH_HOST" "rm -rf ${BUILD_DIR}/output ${BUILD_DIR}/workspaces ${BUILD_DIR}/scripts ${BUILD_DIR}/tekton-results ${BUILD_DIR}/config.toml ${BUILD_DIR}/.docker ${BUILD_DIR}/entitlement ${BUILD_DIR}/activation-key ${BUILD_DIR}/tmp"
-        echo "[$(date --utc -Ins)] Cleanup complete"
-
   volumes:
     - name: workdir
       emptyDir: {}
     - name: ssh
       secret:
         optional: false
-        #secretName: multi-platform-ssh-$(context.taskRun.name)
-        secretName: own-custom-vm
+        secretName: multi-platform-ssh-$(context.taskRun.name)
+        #secretName: own-custom-vm
