@@ -9,7 +9,7 @@ jobs:
   check-blueprints:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Regenerate merged blueprints
         run: python3 .github/merge-blueprints.py --generate-all
