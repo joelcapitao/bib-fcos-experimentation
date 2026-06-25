@@ -271,7 +271,7 @@ spec:
         value: $(params.output-image)
       - name: IMAGES
         value:
-          - $(tasks.build-disk-images.results.IMAGE_REFERENCE)
+          - $(tasks.build-disk-images.results.ARTIFACT_TAGS)
     results:
     - name: IMAGE_URL
       value: $(tasks.build-disk-image-index.results.IMAGE_URL)

@@ -3,19 +3,18 @@ kind: Task
 metadata:
   name: build-disk-image-index
   labels:
-    app.kubernetes.io/version: "0.1"
+    app.kubernetes.io/version: "0.2"
     build.appstudio.redhat.com/build_type: disk-image
   annotations:
     tekton.dev/tags: "image-build, konflux, fcos"
     tekton.dev/description: >
-      Combine multiple per-architecture OCI indexes into a single multi-arch
-      OCI index for Fedora CoreOS disk images.
+      Create a multi-arch OCI index from individual disk image artifact tags.
 
-      This task takes Image Index references (one per architecture) and combines
-      them into a single OCI index. Each input index contains multiple artifacts
-      (e.g. qemu, metal) identified by platform.os=<artifact>.
-
-      The final index allows pulling specific artifacts with:
+      This task takes individual artifact tag references (pushed by the
+      image-builder task) and assembles them into a single OCI manifest index.
+      Each artifact was pushed with an OCI config JSON carrying platform
+      metadata (os=<artifact>, architecture=<arch>), so the final index
+      allows pulling specific artifacts with:
         oras pull --platform qemu/amd64 <registry>/<repo>:<tag>
         oras pull --platform metal/arm64 <registry>/<repo>:<tag>
 
@@ -32,10 +31,13 @@ spec:
     - name: IMAGES
       type: array
       description: >
-        List of Image Index references to be combined into the final index.
-        Each should be a full reference with digest (repo:tag@sha256:...).
-        These are typically the outputs from multiple image-builder task runs
-        (one per architecture).
+        List of artifact tag references to include in the index.
+        Each element can be a single tag or a comma-separated list of tags
+        (as produced by the image-builder task's ARTIFACT_TAGS result).
+        For example: ["repo:tag-qemu,repo:tag-metal", "repo:tag-aws"]
+        All tags are flattened into a single list before creating the index.
+        Each tag must already exist in the registry and carry platform
+        metadata via its OCI config JSON.
 
     - name: TLSVERIFY
       type: string
@@ -68,7 +70,7 @@ spec:
         and the digest (e.g. quay.io/org/repo@sha256:abc123...).
     - name: IMAGES
       description: >
-        Comma-separated list of all image manifests referenced by the index.
+        Comma-separated list of all artifact tags referenced by the index.
 
   stepTemplate:
     env:
@@ -99,41 +101,20 @@ spec:
         echo "IMAGE: ${IMAGE}"
         echo "TLSVERIFY: ${TLSVERIFY}"
         echo "ALWAYS_BUILD_INDEX: ${ALWAYS_BUILD_INDEX}"
-        echo "Input images: $@"
+        echo "Input arguments: $@"
 
-        # Collect input images into array
-        IMAGES=("$@")
-        IMAGE_COUNT=${#IMAGES[@]}
+        # Flatten comma-separated artifact tags into a single array.
+        # Each argument may be a single tag or a CSV list from image-builder's
+        # ARTIFACT_TAGS result (e.g. "repo:tag-qemu,repo:tag-metal").
+        ARTIFACT_TAGS=()
+        for arg in "$@"; do
+          IFS=',' read -ra TAGS <<< "${arg}"
+          ARTIFACT_TAGS+=("${TAGS[@]}")
+        done
+        TAG_COUNT=${#ARTIFACT_TAGS[@]}
 
-        echo "Number of input images: ${IMAGE_COUNT}"
-
-        # Handle single image case
-        if [ "${IMAGE_COUNT}" -eq 1 ] && [ "${ALWAYS_BUILD_INDEX}" != "true" ]; then
-          echo "Only one image provided and ALWAYS_BUILD_INDEX is not true."
-          echo "Forwarding single image reference to results."
-
-          SINGLE_IMAGE="${IMAGES[0]}"
-
-          # Parse the image reference
-          if [[ "${SINGLE_IMAGE}" == *"@"* ]]; then
-            # Format: repo:tag@sha256:digest
-            IMAGE_URL="${SINGLE_IMAGE%@*}"
-            IMAGE_DIGEST="${SINGLE_IMAGE#*@}"
-          else
-            # Format: repo:tag (need to fetch digest)
-            IMAGE_URL="${SINGLE_IMAGE}"
-            IMAGE_DIGEST=$(podman run --rm \
-              -v "$HOME/.docker:/root/.docker:ro" \
-              "${ORAS_IMAGE}" \
-              manifest fetch "${SINGLE_IMAGE}" --descriptor | jq -r '.digest')
-          fi
-
-          echo -n "${IMAGE_URL}" | tee "$(results.IMAGE_URL.path)"
-          echo -n "${IMAGE_DIGEST}" | tee "$(results.IMAGE_DIGEST.path)"
-          echo -n "${IMAGE_URL}@${IMAGE_DIGEST}" | tee "$(results.IMAGE_REF.path)"
-          echo -n "${SINGLE_IMAGE}" | tee "$(results.IMAGES.path)"
-          exit 0
-        fi
+        echo "Flattened artifact tags (${TAG_COUNT}):"
+        printf '  - %s\n' "${ARTIFACT_TAGS[@]}"
 
         # Build TLS args
         TLS_ARGS=""
@@ -141,70 +122,44 @@ spec:
           TLS_ARGS="--insecure"
         fi
 
-        echo "=== Creating OCI index from ${IMAGE_COUNT} images ==="
+        # Handle single tag case
+        if [ "${TAG_COUNT}" -eq 1 ] && [ "${ALWAYS_BUILD_INDEX}" != "true" ]; then
+          echo "Only one artifact tag provided and ALWAYS_BUILD_INDEX is not true."
+          echo "Forwarding single artifact reference to results."
 
-        # For now, with a single architecture, we can simply copy/tag the index
-        # When we have multiple architectures, we'll need to merge the indexes
-        #
-        # With oras, we can create a new index that references all the manifests
-        # from the input indexes. However, oras manifest index create expects
-        # individual manifest references, not indexes.
-        #
-        # For the multi-arch case, we need to:
-        # 1. Fetch each input index
-        # 2. Extract all manifest references from each index
-        # 3. Create a new index with all manifests
+          SINGLE_TAG="${ARTIFACT_TAGS[0]}"
 
-        if [ "${IMAGE_COUNT}" -eq 1 ]; then
-          # Single image: just copy/tag it to the target
-          echo "Copying single index to ${IMAGE}"
-
-          podman run --rm \
+          # Fetch the digest
+          TAG_DIGEST=$(podman run --rm \
             -v "$HOME/.docker:/root/.docker:ro" \
             "${ORAS_IMAGE}" \
-            cp ${TLS_ARGS} \
-            "${IMAGES[0]}" \
-            "${IMAGE}"
-        else
-          # Multiple images: need to merge indexes
-          echo "Merging ${IMAGE_COUNT} indexes..."
+            manifest fetch ${TLS_ARGS} "${SINGLE_TAG}" --descriptor | jq -r '.digest')
 
-          # Collect all manifest references from all input indexes
-          ALL_MANIFESTS=()
-
-          for input_image in "${IMAGES[@]}"; do
-            echo "Fetching manifests from: ${input_image}"
-
-            # Fetch the index and extract manifest references
-            MANIFESTS=$(podman run --rm \
-              -v "$HOME/.docker:/root/.docker:ro" \
-              "${ORAS_IMAGE}" \
-              manifest fetch ${TLS_ARGS} "${input_image}" | \
-              jq -r '.manifests[] | "\(.digest)"')
-
-            # Get the repository from the input image
-            REPO="${input_image%%:*}"
-            if [[ "${input_image}" == *"@"* ]]; then
-              REPO="${input_image%%@*}"
-              REPO="${REPO%%:*}"
-            fi
-
-            for digest in ${MANIFESTS}; do
-              ALL_MANIFESTS+=("${REPO}@${digest}")
-            done
-          done
-
-          echo "Total manifests to include: ${#ALL_MANIFESTS[@]}"
-          echo "Manifests: ${ALL_MANIFESTS[*]}"
-
-          # Create the merged index
-          podman run --rm \
-            -v "$HOME/.docker:/root/.docker:ro" \
-            "${ORAS_IMAGE}" \
-            manifest index create ${TLS_ARGS} \
-            "${IMAGE}" \
-            "${ALL_MANIFESTS[@]}"
+          echo -n "${SINGLE_TAG}" | tee "$(results.IMAGE_URL.path)"
+          echo -n "${TAG_DIGEST}" | tee "$(results.IMAGE_DIGEST.path)"
+          echo -n "${SINGLE_TAG}@${TAG_DIGEST}" | tee "$(results.IMAGE_REF.path)"
+          echo -n "${SINGLE_TAG}" | tee "$(results.IMAGES.path)"
+          exit 0
         fi
+
+        echo "=== Creating OCI index from ${TAG_COUNT} artifact tags ==="
+
+        # Create the index directly from individual artifact tags.
+        # Each artifact tag was pushed with an OCI config JSON containing
+        # platform metadata (architecture, os), so oras manifest index create
+        # will pick up the platform info automatically.
+        #
+        # This is equivalent to the manual step:
+        #   oras manifest index create <target> <tag1> <tag2> ...
+
+        echo "Creating index at ${IMAGE} from: ${ARTIFACT_TAGS[*]}"
+
+        podman run --rm \
+          -v "$HOME/.docker:/root/.docker:ro" \
+          "${ORAS_IMAGE}" \
+          manifest index create ${TLS_ARGS} \
+          "${IMAGE}" \
+          "${ARTIFACT_TAGS[@]}"
 
         echo "=== Index created at ${IMAGE} ==="
 
@@ -221,8 +176,8 @@ spec:
         echo -n "${INDEX_DIGEST}" | tee "$(results.IMAGE_DIGEST.path)"
         echo -n "${IMAGE}@${INDEX_DIGEST}" | tee "$(results.IMAGE_REF.path)"
 
-        # Build comma-separated list of input images
-        IMAGES_CSV=$(IFS=,; echo "${IMAGES[*]}")
+        # Build comma-separated list of artifact tags
+        IMAGES_CSV=$(IFS=,; echo "${ARTIFACT_TAGS[*]}")
         echo -n "${IMAGES_CSV}" | tee "$(results.IMAGES.path)"
 
         echo ""
