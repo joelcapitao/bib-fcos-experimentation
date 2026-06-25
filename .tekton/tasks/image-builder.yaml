@@ -12,8 +12,9 @@ metadata:
       on an arch-native remote VM provisioned by the Konflux multi-platform-controller.
 
       This task builds all specified artifacts (e.g. qemu, metal) for a single
-      architecture in the same VM, then creates an OCI index where each artifact
-      is identified by platform.os=<artifact> and platform.architecture=<arch>.
+      architecture in the same VM. Each artifact is pushed individually as an
+      OCI artifact with a config JSON carrying platform metadata
+      (os=<artifact>, architecture=<arch>).
 
       Blueprints and disk layout are read directly from the cloned repository.
 
@@ -24,9 +25,10 @@ metadata:
       committed to the repository. A GitHub Actions workflow verifies they
       stay in sync with the source layers.
 
-      The produced disk images are wrapped as OCI artifacts and assembled into
-      an OCI index, pushed to OUTPUT_IMAGE. The index uses custom platform values
-      (e.g. platform.os=qemu, platform.architecture=amd64) to identify each artifact.
+      Each disk image is pushed as a separate OCI artifact with a tag of
+      <OUTPUT_IMAGE>-<artifact> and an OCI config JSON containing the platform
+      metadata (architecture, os). The build-disk-image-index task is then
+      responsible for assembling these into a single OCI index.
 
       Artifacts without blueprints for the target arch are silently skipped.
       If one artifact fails to build, the task continues with the others (best-effort).
@@ -104,14 +106,16 @@ spec:
       description: Storage driver to configure for buildah when pushing results.
 
   results:
-    - name: IMAGE_DIGEST
-      description: Digest of the OCI index pushed to the registry.
     - name: IMAGE_URL
-      description: Repository and tag where the OCI index was pushed.
-    - name: IMAGE_REFERENCE
       description: >
-        Full image reference (IMAGE_URL@IMAGE_DIGEST). Used by build-disk-image-index
-        to assemble the final multi-arch manifest list.
+        Base image repository and tag (OUTPUT_IMAGE). Individual artifacts
+        are pushed as <IMAGE_URL>-<artifact> (e.g. repo:tag-qemu).
+    - name: ARTIFACT_TAGS
+      description: >
+        Comma-separated list of individual artifact tags pushed to the registry.
+        Each tag represents a single artifact for a single architecture
+        (e.g. repo:tag-qemu,repo:tag-metal). Used by build-disk-image-index
+        to assemble the final multi-arch manifest index.
     - name: BUILD_REPORT
       description: >
         JSON object reporting the build status of each artifact:
@@ -467,12 +471,27 @@ spec:
             continue
           fi
 
-          # Push artifact with oras using custom platform
+          # Push artifact with oras using a config JSON for platform metadata
           ARTIFACT_TAG="${OUTPUT_IMAGE}-${artifact}"
           echo "=== Pushing ${artifact} to ${ARTIFACT_TAG} with platform ${artifact}/${OCI_ARCH} ==="
 
           # Get just the filename for oras
           DISK_FILENAME=$(basename "${DISK_FILE}")
+
+          # Generate OCI config JSON with platform metadata
+          # This allows `oras pull --platform <artifact>/<arch>` to work
+          CONFIG_FILE="${OUTPUT_DIR}/config-${artifact}-${OCI_ARCH}.json"
+          cat > "${CONFIG_FILE}" <<CONFIGEOF
+        {
+          "architecture": "${OCI_ARCH}",
+          "os": "${artifact}",
+          "rootfs": {
+            "type": "layers",
+            "diff_ids": []
+          },
+          "config": {}
+        }
+        CONFIGEOF
 
           if ! sudo podman run --rm \
             -v "${OUTPUT_DIR}:/output:z" \
@@ -482,7 +501,7 @@ spec:
             push \
             --registry-config /root/.docker/config.json \
             --artifact-type "${MEDIA_TYPE}" \
-            --artifact-platform "${artifact}/${OCI_ARCH}" \
+            --config "$(basename "${CONFIG_FILE}"):application/vnd.oci.image.config.v1+json" \
             "${ARTIFACT_TAG}" \
             "${DISK_FILENAME}"; then
 
@@ -510,50 +529,23 @@ spec:
         fi
 
         # ------------------------------------------------------------------
-        # Create OCI index with all built artifacts
-        # ------------------------------------------------------------------
-        echo ""
-        echo "============================================================"
-        echo "=== Creating OCI index ==="
-        echo "============================================================"
-
-        # Build the list of artifact references for oras manifest index create
-        MANIFEST_REFS=()
-        for artifact in "${BUILT_ARTIFACTS[@]}"; do
-          MANIFEST_REFS+=("${OUTPUT_IMAGE}-${artifact}")
-        done
-
-        echo "Creating index from: ${MANIFEST_REFS[*]}"
-
-        # Create the index
-        if ! sudo podman run --rm \
-          -v "${BUILD_DIR}/.docker:/root/.docker:ro" \
-          "${ORAS_IMAGE}" \
-          manifest index create \
-          --registry-config /root/.docker/config.json \
-          "${OUTPUT_IMAGE}" \
-          "${MANIFEST_REFS[@]}"; then
-
-          echo "ERROR: Failed to create OCI index"
-          exit 1
-        fi
-
-        echo "=== OCI index created at ${OUTPUT_IMAGE} ==="
-
-        # Get the index digest
-        INDEX_DIGEST=$(sudo podman run --rm \
-          -v "${BUILD_DIR}/.docker:/root/.docker:ro" \
-          "${ORAS_IMAGE}" \
-          manifest fetch \
-          --registry-config /root/.docker/config.json \
-          "${OUTPUT_IMAGE}" --descriptor | jq -r '.digest')
-
-        echo "INDEX_DIGEST: ${INDEX_DIGEST}"
-
         # Write results
+        # ------------------------------------------------------------------
+        # The per-arch index creation is handled by the build-disk-image-index
+        # task which combines artifact tags from all architectures.
+        # Here we output the list of individual artifact tags that were pushed.
+
+        # Build comma-separated list of artifact tags
+        ARTIFACT_TAGS=()
+        for artifact in "${BUILT_ARTIFACTS[@]}"; do
+          ARTIFACT_TAGS+=("${OUTPUT_IMAGE}-${artifact}")
+        done
+        ARTIFACT_TAGS_CSV=$(IFS=,; echo "${ARTIFACT_TAGS[*]}")
+
+        echo "=== Artifact tags: ${ARTIFACT_TAGS_CSV} ==="
+
         echo -n "${OUTPUT_IMAGE}" > "${BUILD_DIR}/tekton-results/IMAGE_URL"
-        echo -n "${INDEX_DIGEST}" > "${BUILD_DIR}/tekton-results/IMAGE_DIGEST"
-        echo -n "${OUTPUT_IMAGE}@${INDEX_DIGEST}" > "${BUILD_DIR}/tekton-results/IMAGE_REFERENCE"
+        echo -n "${ARTIFACT_TAGS_CSV}" > "${BUILD_DIR}/tekton-results/ARTIFACT_TAGS"
         echo "$BUILD_REPORT" > "${BUILD_DIR}/tekton-results/BUILD_REPORT"
 
         echo "=== All done ==="
