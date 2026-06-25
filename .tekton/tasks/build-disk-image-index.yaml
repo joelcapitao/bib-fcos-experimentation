@@ -53,12 +53,6 @@ spec:
         If false and only one image is provided, that image reference is
         forwarded directly to the results.
 
-    - name: ORAS_IMAGE
-      type: string
-      default: "ghcr.io/oras-project/oras:v1.3.0@sha256:6ce045ce069a89934d6666b8b49f9c4c0145201bd6de6dbe2aee267814c55468"
-      description: >
-        OCI image for the oras CLI tool.
-
   results:
     - name: IMAGE_DIGEST
       description: Digest of the OCI index just built.
@@ -80,8 +74,6 @@ spec:
         value: $(params.TLSVERIFY)
       - name: ALWAYS_BUILD_INDEX
         value: $(params.ALWAYS_BUILD_INDEX)
-      - name: ORAS_IMAGE
-        value: $(params.ORAS_IMAGE)
 
   steps:
     - name: build-index
@@ -122,6 +114,33 @@ spec:
           TLS_ARGS="--insecure"
         fi
 
+        # Login to registry with oras
+        # Quay registries require explicit oras login before pushing.
+        REGISTRY_HOST=$(echo "${IMAGE}" | cut -d'/' -f1)
+        REGISTRY_PATH="${IMAGE%%:*}"
+        echo "=== Logging into registry ${REGISTRY_HOST} with oras ==="
+        echo "Looking up auth for: ${REGISTRY_PATH}"
+
+        DOCKER_CONFIG="$HOME/.docker/config.json"
+        AUTH_B64=$(jq -r ".auths[\"${REGISTRY_PATH}\"].auth // empty" "${DOCKER_CONFIG}")
+
+        if [ -n "${AUTH_B64}" ]; then
+          AUTH_DECODED=$(echo "${AUTH_B64}" | base64 -d)
+          ORAS_USER="${AUTH_DECODED%%:*}"
+          ORAS_PASS="${AUTH_DECODED#*:}"
+
+          echo "${ORAS_PASS}" | oras login \
+            --registry-config "${DOCKER_CONFIG}" \
+            --username "${ORAS_USER}" \
+            --password-stdin \
+            "${REGISTRY_HOST}"
+          echo "Login successful."
+        else
+          echo "WARNING: No auth found for ${REGISTRY_PATH} in ${DOCKER_CONFIG}"
+          echo "Available registries:"
+          jq -r '.auths | keys[]' "${DOCKER_CONFIG}"
+        fi
+
         # Handle single tag case
         if [ "${TAG_COUNT}" -eq 1 ] && [ "${ALWAYS_BUILD_INDEX}" != "true" ]; then
           echo "Only one artifact tag provided and ALWAYS_BUILD_INDEX is not true."
@@ -130,10 +149,7 @@ spec:
           SINGLE_TAG="${ARTIFACT_TAGS[0]}"
 
           # Fetch the digest
-          TAG_DIGEST=$(podman run --rm \
-            -v "$HOME/.docker:/root/.docker:ro" \
-            "${ORAS_IMAGE}" \
-            manifest fetch ${TLS_ARGS} "${SINGLE_TAG}" --descriptor | jq -r '.digest')
+          TAG_DIGEST=$(oras manifest fetch --registry-config "$HOME/.docker/config.json" ${TLS_ARGS} "${SINGLE_TAG}" --descriptor | jq -r '.digest')
 
           echo -n "${SINGLE_TAG}" | tee "$(results.IMAGE_URL.path)"
           echo -n "${TAG_DIGEST}" | tee "$(results.IMAGE_DIGEST.path)"
@@ -154,20 +170,14 @@ spec:
 
         echo "Creating index at ${IMAGE} from: ${ARTIFACT_TAGS[*]}"
 
-        podman run --rm \
-          -v "$HOME/.docker:/root/.docker:ro" \
-          "${ORAS_IMAGE}" \
-          manifest index create ${TLS_ARGS} \
+        oras manifest index create --registry-config "$HOME/.docker/config.json" ${TLS_ARGS} \
           "${IMAGE}" \
           "${ARTIFACT_TAGS[@]}"
 
         echo "=== Index created at ${IMAGE} ==="
 
         # Get the index digest
-        INDEX_DIGEST=$(podman run --rm \
-          -v "$HOME/.docker:/root/.docker:ro" \
-          "${ORAS_IMAGE}" \
-          manifest fetch ${TLS_ARGS} "${IMAGE}" --descriptor | jq -r '.digest')
+        INDEX_DIGEST=$(oras manifest fetch --registry-config "$HOME/.docker/config.json" ${TLS_ARGS} "${IMAGE}" --descriptor | jq -r '.digest')
 
         echo "INDEX_DIGEST: ${INDEX_DIGEST}"
 
