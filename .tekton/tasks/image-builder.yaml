@@ -320,7 +320,6 @@ spec:
         cat >> scripts/script-build.sh << 'REMOTESSHEOF'
 
         REPO_DIR="${BUILD_DIR}/workspaces/source"
-        MERGED_BP="${REPO_DIR}/blueprints/generated/${ARTIFACT}-${ARCH}.toml"
 
         # Read artifacts list
         mapfile -t ARTIFACTS < "${BUILD_DIR}/artifacts.txt"
@@ -330,20 +329,9 @@ spec:
         echo "BUILDER_IMAGE:  ${BUILDER_IMAGE}"
         echo "OUTPUT_IMAGE:   ${OUTPUT_IMAGE}"
         echo "OUTPUT_NAME:    ${OUTPUT_NAME}"
-        echo "Blueprint:      ${MERGED_BP}"
         echo "ARCH:           ${ARCH}"
         echo "OCI_ARCH:       ${OCI_ARCH}"
         echo "ARTIFACTS:      ${ARTIFACTS[*]}"
-        echo "Blueprint:      ${MERGED_BP}"
-
-        if [ ! -f "${MERGED_BP}" ]; then
-          echo "ERROR: pre-merged blueprint not found: ${MERGED_BP}"
-          echo "Run 'python3 .github/merge-blueprints.py --generate-all' and commit the result."
-          exit 1
-        fi
-
-        echo "=== Blueprint ==="
-        cat "${MERGED_BP}"
 
         # Pull all container images to ensure we always use the latest versions.
         # The remote VM may have stale cached images from previous runs.
@@ -402,11 +390,11 @@ spec:
           echo "=== Processing artifact: ${artifact} for ${ARCH}"
           echo "============================================================"
 
-          ARTIFACT_BP="${REPO_DIR}/${artifact}/${ARCH}.toml"
+          MERGED_BP="${REPO_DIR}/blueprints/generated/${artifact}-${ARCH}.toml"
 
-          # Skip if no blueprint for this arch
-          if [ ! -f "${ARTIFACT_BP}" ]; then
-            echo "INFO: Skipping ${artifact} (no blueprint for ${ARCH})"
+          # Skip if no pre-generated blueprint for this arch
+          if [ ! -f "${MERGED_BP}" ]; then
+            echo "INFO: Skipping ${artifact} (no blueprint at ${MERGED_BP})"
             BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".skipped += [\"$artifact\"]")
             continue
           fi
@@ -420,19 +408,7 @@ spec:
 
           echo "IMAGE_TYPE: ${IMAGE_TYPE}"
           echo "MEDIA_TYPE: ${MEDIA_TYPE}"
-
-          # Merge blueprints into a single file
-          MERGED_BP="${REPO_DIR}/blueprint-merged-${artifact}.toml"
-          BP_FILES=("${SHARED_BP}")
-          if [ -f "${SHARED_ARCH_BP}" ]; then
-            echo "Using shared arch blueprint: ${SHARED_ARCH_BP}"
-            BP_FILES+=("${SHARED_ARCH_BP}")
-          fi
-          BP_FILES+=("${ARTIFACT_BP}")
-
-          echo "Merging blueprints: ${BP_FILES[*]}"
-          python3 "${REPO_DIR}/merge-blueprints.py" -o "${MERGED_BP}" "${BP_FILES[@]}"
-          echo "=== Merged blueprint for ${artifact} ==="
+          echo "=== Pre-merged blueprint for ${artifact} ==="
           cat "${MERGED_BP}"
 
           # Create output directory for this artifact
@@ -442,7 +418,7 @@ spec:
 
           # Run image-builder-cli
           echo "=== Building ${artifact} disk image ==="
-          if ! sudo podman run --rm --privileged \
+          if ! sudo podman run --rm --privileged --pull=never \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
             -v "${REPO_DIR}:/repo:ro" \
             -v "${OUTPUT_DIR}:/output" \
@@ -450,7 +426,7 @@ spec:
             build "${IMAGE_TYPE}" \
             --bootc-build-ref "${BUILDER_IMAGE}" \
             --bootc-ref "${SOURCE_IMAGE}" \
-            --blueprint "/repo/blueprint-merged-${artifact}.toml" \
+            --blueprint "/repo/blueprints/generated/${artifact}-${ARCH}.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
             --with-buildlog; then
