@@ -1,0 +1,15 @@
+test: ./entrypoint.sh
+
+/pull-artifact:
+  summary: Pull QEMU disk image from OCI artifact registry
+  duration: 30m
+  order: 50
+  environment:
+    TEST_CASE: pull-artifact
+
+/test-qemu:
+  summary: Run kola QEMU tests
+  duration: 2h
+  order: 70
+  environment:
+    TEST_CASE: test-qemu
