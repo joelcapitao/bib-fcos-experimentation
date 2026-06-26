@@ -14,7 +14,7 @@
 # Testing Farm provisions a Fedora VM, runs the tmt plan at tmt/plans/main.fmf
 # which pulls the QEMU qcow2 via oras and runs kola tests against it.
 apiVersion: tekton.dev/v1
-kind: Pipeline
+kind: PipelineRun
 metadata:
   name: testing-farm-kola-qemu
 spec:
