@@ -1,0 +1,211 @@
+# Pipeline to run kola QEMU tests via Testing Farm.
+#
+# This pipeline is referenced by an IntegrationTestScenario applied to the
+# cluster. After a successful disk-images-rawhide build, the Konflux
+# integration service creates a PipelineRun from this Pipeline definition.
+#
+# Flow:
+#   1. resolve-secrets: Detect pull secret names for registry auth
+#   2. pre-process:     Extract snapshot info, check image availability
+#   3. scheduler:       Submit test request to Testing Farm API
+#   4. wait-for-results: Poll Testing Farm until test completes
+#   5. result:          Report final test outcome to Konflux
+#
+# Testing Farm provisions a Fedora VM, runs the tmt plan at tmt/plans/main.fmf
+# which pulls the QEMU qcow2 via oras and runs kola tests against it.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: testing-farm-kola-qemu
+spec:
+  description: >-
+    Run kola QEMU tests on pre-built disk images via Testing Farm.
+    Uses the tmt plan at tmt/ which pulls the qcow2 artifact from the
+    OCI index and runs cosa kola tests against it.
+  params:
+    - name: SNAPSHOT
+      description: A list of container images that should undergo testing
+    - name: COMPOSE
+      default: "Fedora-Rawhide"
+      description: Compose to use for the system-under-test.
+    - name: ARCH
+      default: "x86_64"
+      description: Comma-separated list of architectures to run against.
+    - name: TMT_PLAN
+      default: "/plans/kola-qemu"
+      description: Name filter for plans defined in the repo.
+    - name: TMT_PATH
+      default: "tmt"
+      description: Path to the metadata tree root, relative to the git repository root.
+    - name: TIMEOUT
+      default: "240"
+      description: Set the timeout for the request in minutes.
+    - name: HARDWARE
+      default: "memory=>= 8 GB;disk.size=>= 50 GB;virtualization.is-supported=true;cpu.processors=>= 4"
+      description: >-
+        HW requirements for the Testing Farm provisioned machine.
+        Kola QEMU tests require KVM support, enough RAM and disk.
+    - name: TESTING_FARM_TOKEN_SECRET_NAME
+      default: "testing-farm-secret"
+      description: Name of the secret containing the testing-farm-token key.
+    - name: PULL_SECRET_NAME
+      default: ""
+      description: Explicit name of pull secret to use.
+    - name: TESTING_FARM_API_URL
+      default: https://api.dev.testing-farm.io/v0.1
+      description: The Testing Farm instance API to use.
+    - name: TESTING_FARM_IMAGE_TAG
+      default: "v3.21"
+      description: Image tag for the Testing Farm task containers.
+
+  results:
+    - name: REQUEST_URL
+      value: "$(tasks.scheduler.results.tf-request)"
+    - name: ARTIFACTS_URL
+      value: "$(tasks.wait-for-results.results.ARTIFACTS_URL)"
+    - name: TEST_OUTPUT
+      value: "$(tasks.result.results.TEST_OUTPUT)"
+
+  tasks:
+    - name: resolve-secrets
+      timeout: "10m"
+      taskRef:
+        resolver: bundles
+        params:
+          - name: name
+            value: testing-farm-konflux-resolve-secrets
+          - name: kind
+            value: task
+          - name: bundle
+            value: quay.io/testing-farm/testing-farm-konflux-resolve-secrets:$(params.TESTING_FARM_IMAGE_TAG)
+      params:
+        - name: PULL_SECRET_NAME
+          value: $(params.PULL_SECRET_NAME)
+        - name: TESTING_FARM_IMAGE_NAME
+          value: quay.io/testing-farm/tf-in-konflux
+        - name: IMAGE_TAG
+          value: $(params.TESTING_FARM_IMAGE_TAG)
+
+    - name: pre-process
+      runAfter:
+        - resolve-secrets
+      timeout: "30m"
+      taskRef:
+        resolver: bundles
+        params:
+          - name: name
+            value: testing-farm-konflux-pre-process
+          - name: kind
+            value: task
+          - name: bundle
+            value: quay.io/testing-farm/testing-farm-konflux-pre-process:$(params.TESTING_FARM_IMAGE_TAG)
+      params:
+        - name: PIPELINE_MODE
+          value: container
+        - name: PULL_SECRET_NAME_OLD
+          value: "$(tasks.resolve-secrets.results.pull-secret-name-old)"
+        - name: PULL_SECRET_NAME_NEW
+          value: "$(tasks.resolve-secrets.results.pull-secret-name-new)"
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+        - name: ARCH
+          value: $(params.ARCH)
+        - name: IN_TESTING
+          value: ""
+        - name: TESTING_FARM_IMAGE_NAME
+          value: quay.io/testing-farm/tf-in-konflux
+        - name: IMAGE_TAG
+          value: $(params.TESTING_FARM_IMAGE_TAG)
+
+    - name: scheduler
+      runAfter:
+        - pre-process
+      timeout: "30m"
+      taskRef:
+        resolver: bundles
+        params:
+          - name: name
+            value: testing-farm-konflux-scheduler
+          - name: kind
+            value: task
+          - name: bundle
+            value: quay.io/testing-farm/testing-farm-konflux-scheduler:$(params.TESTING_FARM_IMAGE_TAG)
+      params:
+        - name: PIPELINE_MODE
+          value: container
+        - name: PULL_SECRET_NAME_OLD
+          value: "$(tasks.resolve-secrets.results.pull-secret-name-old)"
+        - name: PULL_SECRET_NAME_NEW
+          value: "$(tasks.resolve-secrets.results.pull-secret-name-new)"
+        - name: TESTING_FARM_TOKEN_SECRET_NAME
+          value: "$(params.TESTING_FARM_TOKEN_SECRET_NAME)"
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+        - name: COMPOSE
+          value: $(params.COMPOSE)
+        - name: ARCH
+          value: $(params.ARCH)
+        - name: TIMEOUT
+          value: $(params.TIMEOUT)
+        - name: TESTING_FARM_API_URL
+          value: $(params.TESTING_FARM_API_URL)
+        - name: TMT_PLAN
+          value: $(params.TMT_PLAN)
+        - name: TMT_PATH
+          value: $(params.TMT_PATH)
+        - name: HARDWARE
+          value: $(params.HARDWARE)
+        - name: PIPELINE_RUN_SKIPPED
+          value: "$(tasks.pre-process.results.pipeline-run-skipped)"
+        - name: TESTING_FARM_IMAGE_NAME
+          value: quay.io/testing-farm/tf-in-konflux
+        - name: IMAGE_TAG
+          value: $(params.TESTING_FARM_IMAGE_TAG)
+
+    - name: wait-for-results
+      runAfter:
+        - scheduler
+      timeout: "24h"
+      retries: 5
+      taskRef:
+        resolver: bundles
+        params:
+          - name: name
+            value: testing-farm-wait-for-results
+          - name: kind
+            value: task
+          - name: bundle
+            value: quay.io/testing-farm/testing-farm-wait-for-results:$(params.TESTING_FARM_IMAGE_TAG)
+      params:
+        - name: TF_REQUEST
+          value: "$(tasks.scheduler.results.tf-request)"
+        - name: PIPELINE_RUN_SKIPPED
+          value: "$(tasks.scheduler.results.pipeline-run-skipped)"
+        - name: TESTING_FARM_IMAGE_NAME
+          value: quay.io/testing-farm/tf-in-konflux
+        - name: IMAGE_TAG
+          value: $(params.TESTING_FARM_IMAGE_TAG)
+
+    - name: result
+      runAfter:
+        - wait-for-results
+      taskRef:
+        resolver: bundles
+        params:
+          - name: name
+            value: testing-farm-result
+          - name: kind
+            value: task
+          - name: bundle
+            value: quay.io/testing-farm/testing-farm-result:$(params.TESTING_FARM_IMAGE_TAG)
+      params:
+        - name: PRE_PROCESS_TEST_OUTPUT
+          value: "$(tasks.pre-process.results.TEST_OUTPUT)"
+        - name: WAIT_FOR_RESULT_TEST_OUTPUT
+          value: "$(tasks.wait-for-results.results.TEST_OUTPUT)"
+        - name: PIPELINE_RUN_SKIPPED
+          value: "$(tasks.scheduler.results.pipeline-run-skipped)"
+        - name: TESTING_FARM_IMAGE_NAME
+          value: quay.io/testing-farm/tf-in-konflux
+        - name: IMAGE_TAG
+          value: $(params.TESTING_FARM_IMAGE_TAG)
