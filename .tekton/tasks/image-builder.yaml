@@ -340,6 +340,31 @@ spec:
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${ORAS_IMAGE}"
 
+        # ------------------------------------------------------------------
+        # Extract labels from SOURCE_IMAGE to forward as OCI annotations
+        # on the disk image artifacts.
+        # ------------------------------------------------------------------
+        echo "=== Extracting labels from SOURCE_IMAGE ==="
+        CONFIG_COMMIT=$(sudo podman inspect --format '{{index .Config.Labels "vcs-ref"}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
+        CONFIG_GIT_URL=$(sudo podman inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
+        CONFIG_GIT_REF=$(sudo podman inspect --format '{{index .Config.Labels "com.coreos.stream"}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
+
+        echo "CONFIG_COMMIT:  ${CONFIG_COMMIT}"
+        echo "CONFIG_GIT_URL: ${CONFIG_GIT_URL}"
+        echo "CONFIG_GIT_REF: ${CONFIG_GIT_REF}"
+
+        # Build annotation flags for oras push (only include non-empty labels)
+        ORAS_ANNOTATIONS=()
+        if [ -n "${CONFIG_COMMIT}" ]; then
+          ORAS_ANNOTATIONS+=(--annotation "vcs-ref=${CONFIG_COMMIT}")
+        fi
+        if [ -n "${CONFIG_GIT_URL}" ]; then
+          ORAS_ANNOTATIONS+=(--annotation "org.opencontainers.image.source=${CONFIG_GIT_URL}")
+        fi
+        if [ -n "${CONFIG_GIT_REF}" ]; then
+          ORAS_ANNOTATIONS+=(--annotation "com.coreos.stream=${CONFIG_GIT_REF}")
+        fi
+
         # create the output dir (clean any leftovers from a previous run)
         rm -rf "${BUILD_DIR}/output"
         mkdir "${BUILD_DIR}/output"
@@ -478,6 +503,7 @@ spec:
             --registry-config /root/.docker/config.json \
             --artifact-type "${MEDIA_TYPE}" \
             --config "$(basename "${CONFIG_FILE}"):application/vnd.oci.image.config.v1+json" \
+            "${ORAS_ANNOTATIONS[@]}" \
             "${ARTIFACT_TAG}" \
             "${DISK_FILENAME}"; then
 
