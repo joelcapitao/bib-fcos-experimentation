@@ -8,18 +8,21 @@ metadata:
   annotations:
     tekton.dev/tags: "image-build, konflux, fcos"
     tekton.dev/description: >
-      Create a multi-arch OCI index from individual disk image artifact tags.
+      Create an OCI index from image references (disk images and containers).
 
-      This task takes individual artifact tag references (pushed by the
-      image-builder task) and assembles them into a single OCI manifest index.
-      Each artifact was pushed with an OCI config JSON carrying platform
-      metadata (os=<artifact>, architecture=<arch>), so the final index
-      allows pulling specific artifacts with:
-        oras pull --platform qemu/amd64 <registry>/<repo>:<tag>
-        oras pull --platform metal/arm64 <registry>/<repo>:<tag>
+      This task takes image references (pushed by the image-builder task)
+      and assembles them into a single OCI manifest index. The IMAGES list
+      may contain both disk image ORAS artifacts (with custom platform
+      metadata os=<artifact>, architecture=<arch>) and regular container
+      images (with native platform os=linux, architecture=<arch>).
 
-      Inspired by Konflux build-image-index task but adapted for disk image
-      artifacts with custom platform metadata.
+      The final index allows pulling specific entries with:
+        oras pull --platform qemu/amd64 <registry>/<repo>:<tag>   (disk image)
+        oras pull --platform metal/arm64 <registry>/<repo>:<tag>  (disk image)
+        podman pull --platform linux/amd64 <registry>/<repo>:<tag> (container)
+
+      Inspired by Konflux build-image-index task but adapted for mixed
+      disk image artifacts and container images.
 spec:
   params:
     - name: IMAGE
@@ -31,13 +34,12 @@ spec:
     - name: IMAGES
       type: array
       description: >
-        List of artifact tag references to include in the index.
-        Each element can be a single tag or a comma-separated list of tags
+        List of image references to include in the index.
+        Each element can be a single tag/pullspec or a comma-separated list
         (as produced by the image-builder task's ARTIFACT_TAGS result).
-        For example: ["repo:tag-qemu,repo:tag-metal", "repo:tag-aws"]
-        All tags are flattened into a single list before creating the index.
-        Each tag must already exist in the registry and carry platform
-        metadata via its OCI config JSON.
+        For example: ["repo:tag-qemu,repo:tag-metal,quay.io/fedora/fedora-coreos:rawhide"]
+        All references are flattened into a single list before creating
+        the index. Each reference must already exist in its registry.
 
     - name: TLSVERIFY
       type: string
@@ -95,9 +97,9 @@ spec:
         echo "ALWAYS_BUILD_INDEX: ${ALWAYS_BUILD_INDEX}"
         echo "Input arguments: $@"
 
-        # Flatten comma-separated artifact tags into a single array.
-        # Each argument may be a single tag or a CSV list from image-builder's
-        # ARTIFACT_TAGS result (e.g. "repo:tag-qemu,repo:tag-metal").
+        # Flatten comma-separated tags into a single array.
+        # Each argument may be a single ref or a CSV list from image-builder's
+        # ARTIFACT_TAGS result (e.g. "repo:tag-qemu,repo:tag-metal,quay.io/fedora/fedora-coreos:rawhide").
         ARTIFACT_TAGS=()
         for arg in "$@"; do
           IFS=',' read -ra TAGS <<< "${arg}"
@@ -105,7 +107,7 @@ spec:
         done
         TAG_COUNT=${#ARTIFACT_TAGS[@]}
 
-        echo "Flattened artifact tags (${TAG_COUNT}):"
+        echo "Flattened image references (${TAG_COUNT}):"
         printf '  - %s\n' "${ARTIFACT_TAGS[@]}"
 
         # Build TLS args
@@ -143,8 +145,8 @@ spec:
 
         # Handle single tag case
         if [ "${TAG_COUNT}" -eq 1 ] && [ "${ALWAYS_BUILD_INDEX}" != "true" ]; then
-          echo "Only one artifact tag provided and ALWAYS_BUILD_INDEX is not true."
-          echo "Forwarding single artifact reference to results."
+          echo "Only one image reference provided and ALWAYS_BUILD_INDEX is not true."
+          echo "Forwarding single reference to results."
 
           SINGLE_TAG="${ARTIFACT_TAGS[0]}"
 
@@ -158,15 +160,7 @@ spec:
           exit 0
         fi
 
-        echo "=== Creating OCI index from ${TAG_COUNT} artifact tags ==="
-
-        # Create the index directly from individual artifact tags.
-        # Each artifact tag was pushed with an OCI config JSON containing
-        # platform metadata (architecture, os), so oras manifest index create
-        # will pick up the platform info automatically.
-        #
-        # This is equivalent to the manual step:
-        #   oras manifest index create <target> <tag1> <tag2> ...
+        echo "=== Creating OCI index from ${TAG_COUNT} image references ==="
 
         echo "Creating index at ${IMAGE} from: ${ARTIFACT_TAGS[*]}"
 
@@ -186,7 +180,7 @@ spec:
         echo -n "${INDEX_DIGEST}" | tee "$(results.IMAGE_DIGEST.path)"
         echo -n "${IMAGE}@${INDEX_DIGEST}" | tee "$(results.IMAGE_REF.path)"
 
-        # Build comma-separated list of artifact tags
+        # Build comma-separated list of all references in the index
         IMAGES_CSV=$(IFS=,; echo "${ARTIFACT_TAGS[*]}")
         echo -n "${IMAGES_CSV}" | tee "$(results.IMAGES.path)"
 

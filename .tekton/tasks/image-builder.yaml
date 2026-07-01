@@ -112,10 +112,11 @@ spec:
         are pushed as <IMAGE_URL>-<artifact> (e.g. repo:tag-qemu).
     - name: ARTIFACT_TAGS
       description: >
-        Comma-separated list of individual artifact tags pushed to the registry.
-        Each tag represents a single artifact for a single architecture
-        (e.g. repo:tag-qemu,repo:tag-metal). Used by build-disk-image-index
-        to assemble the final multi-arch manifest index.
+        Comma-separated list of image references for the OCI index.
+        Includes individual disk image artifact tags pushed to the registry
+        (e.g. repo:tag-qemu,repo:tag-metal) and the SOURCE_IMAGE container
+        pullspec. Used by build-disk-image-index to assemble the final
+        manifest index.
     - name: BUILD_REPORT
       description: >
         JSON object reporting the build status of each artifact:
@@ -533,15 +534,13 @@ spec:
         # ------------------------------------------------------------------
         # Write results
         # ------------------------------------------------------------------
-        # The per-arch index creation is handled by the build-disk-image-index
-        # task which combines artifact tags from all architectures.
-        # Here we output the list of individual artifact tags that were pushed.
-
-        # Build comma-separated list of artifact tags
+        # Build comma-separated list: disk image artifact tags + SOURCE_IMAGE
         ARTIFACT_TAGS=()
         for artifact in "${BUILT_ARTIFACTS[@]}"; do
           ARTIFACT_TAGS+=("${OUTPUT_IMAGE}-${artifact}")
         done
+        # Append the source container image so the index includes it
+        ARTIFACT_TAGS+=("${SOURCE_IMAGE}")
         ARTIFACT_TAGS_CSV=$(IFS=,; echo "${ARTIFACT_TAGS[*]}")
 
         echo "=== Artifact tags: ${ARTIFACT_TAGS_CSV} ==="
