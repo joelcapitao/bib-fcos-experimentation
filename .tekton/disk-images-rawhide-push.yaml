@@ -12,7 +12,7 @@ metadata:
       == "main"
   creationTimestamp: null
   labels:
-    appstudio.openshift.io/application: image-builder-poc
+    appstudio.openshift.io/application: fedora-coreos-rawhide
     appstudio.openshift.io/component: disk-images-rawhide
     pipelines.appstudio.openshift.io/type: build
   name: disk-images-rawhide-push
