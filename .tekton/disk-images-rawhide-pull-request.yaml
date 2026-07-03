@@ -28,6 +28,9 @@ spec:
     value: quay.io/konflux-fedora/coreos-tenant/disk-images-rawhide:on-pr-{{revision}}
   - name: image-expires-after
     value: 5d
+  - name: build-platforms
+    value:
+      - linux/amd64
   - name: artifacts
     value:
       - qemu
@@ -61,6 +64,11 @@ spec:
         1h, 2d, 3w for hours, days, and weeks, respectively.
       name: image-expires-after
       type: string
+    - name: build-platforms
+      type: array
+      default:
+        - linux/amd64
+      description: List of platforms to build the container images on. The available set of values is determined by the configuration of the multi-platform-controller.
     - default: "false"
       description: Enable cache proxy configuration
       name: enable-cache-proxy
@@ -119,9 +127,12 @@ spec:
       - clone-repository
       taskRef:
         name: image-builder
+      matrix:
+        params:
+          - name: PLATFORM
+            value:
+              - $(params.build-platforms)
       params:
-      - name: PLATFORM
-        value: linux/amd64
       - name: ARTIFACTS
         value:
           - $(params.artifacts[*])
@@ -143,7 +154,7 @@ spec:
         value: $(params.output-image)
       - name: IMAGES
         value:
-          - $(tasks.build-disk-images.results.ARTIFACT_TAGS)
+          - ["$(tasks.build-disk-images.results.ARTIFACT_TAGS[*])"]
     results:
     - name: IMAGE_URL
       value: $(tasks.build-disk-image-index.results.IMAGE_URL)
