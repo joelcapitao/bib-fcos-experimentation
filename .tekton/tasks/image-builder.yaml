@@ -341,6 +341,35 @@ spec:
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${ORAS_IMAGE}"
 
+        # Resolve the local digest of BUILDER_IMAGE and SOURCE_IMAGE after pulling.
+        # For multi-arch images, podman pull fetches the arch-specific manifest but
+        # image-builder-cli looks up the image by the index digest which differs,
+        # causing "could not find image with digest" errors.
+        # This is a known limitation in image-builder:
+        # https://github.com/osbuild/image-builder/blob/32ac16dfe27419a5f734055fa3f554e22405f5f0/pkg/container/client.go#L555-L564
+        # We resolve the actual local digest and use it for --bootc-build-ref and --bootc-ref.
+        BUILDER_IMAGE_DIGEST=$(sudo podman inspect --format '{{.Digest}}' "${BUILDER_IMAGE}" 2>/dev/null || echo "")
+        if [ -n "${BUILDER_IMAGE_DIGEST}" ]; then
+          BUILDER_IMAGE_REPO="${BUILDER_IMAGE%%:*}"
+          BUILDER_IMAGE_REPO="${BUILDER_IMAGE_REPO%%@*}"
+          BUILDER_IMAGE_RESOLVED="${BUILDER_IMAGE_REPO}@${BUILDER_IMAGE_DIGEST}"
+          echo "Resolved BUILDER_IMAGE: ${BUILDER_IMAGE} -> ${BUILDER_IMAGE_RESOLVED}"
+        else
+          BUILDER_IMAGE_RESOLVED="${BUILDER_IMAGE}"
+          echo "WARNING: Could not resolve BUILDER_IMAGE digest, using original: ${BUILDER_IMAGE}"
+        fi
+
+        SOURCE_IMAGE_DIGEST=$(sudo podman inspect --format '{{.Digest}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
+        if [ -n "${SOURCE_IMAGE_DIGEST}" ]; then
+          SOURCE_IMAGE_REPO="${SOURCE_IMAGE%%:*}"
+          SOURCE_IMAGE_REPO="${SOURCE_IMAGE_REPO%%@*}"
+          SOURCE_IMAGE_RESOLVED="${SOURCE_IMAGE_REPO}@${SOURCE_IMAGE_DIGEST}"
+          echo "Resolved SOURCE_IMAGE: ${SOURCE_IMAGE} -> ${SOURCE_IMAGE_RESOLVED}"
+        else
+          SOURCE_IMAGE_RESOLVED="${SOURCE_IMAGE}"
+          echo "WARNING: Could not resolve SOURCE_IMAGE digest, using original: ${SOURCE_IMAGE}"
+        fi
+
         # ------------------------------------------------------------------
         # Extract labels from SOURCE_IMAGE to forward as OCI annotations
         # on the disk image artifacts.
@@ -450,8 +479,8 @@ spec:
             -v "${OUTPUT_DIR}:/output" \
             "${IBC_IMAGE}" \
             build "${IMAGE_TYPE}" \
-            --bootc-build-ref "${BUILDER_IMAGE}" \
-            --bootc-ref "${SOURCE_IMAGE}" \
+            --bootc-build-ref "${BUILDER_IMAGE_RESOLVED}" \
+            --bootc-ref "${SOURCE_IMAGE_RESOLVED}" \
             --blueprint "/repo/blueprints/generated/${artifact}-${ARCH}.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
