@@ -420,7 +420,7 @@ spec:
           ORAS_PASS="${AUTH_DECODED#*:}"
 
           echo "${ORAS_PASS}" | sudo podman run --rm -i \
-            -v "${BUILD_DIR}/.docker:/root/.docker" \
+            -v "${BUILD_DIR}/.docker:/root/.docker:Z" \
             "${ORAS_IMAGE}" \
             login \
             --username "${ORAS_USER}" \
@@ -525,8 +525,8 @@ spec:
         CONFIGEOF
 
           if ! sudo podman run --rm \
-            -v "${OUTPUT_DIR}:/output:z" \
-            -v "${BUILD_DIR}/.docker:/root/.docker:ro" \
+            -v "${OUTPUT_DIR}:/output:Z" \
+            -v "${BUILD_DIR}/.docker:/root/.docker:Z" \
             -w "/output" \
             "${ORAS_IMAGE}" \
             push \
