@@ -1,4 +1,4 @@
 # Image Builder configuration
 # MintMaker will bump the digests in this file automatically.
-image-builder-cli: "quay.io/jbtrystramtestimages/ib-cli"
+image-builder-cli: "quay.io/jbtrystramtestimages/ib-cli:latest"
 builder-image: "quay.io/bootc-devel/fedora-bootc-rawhide-standard"
