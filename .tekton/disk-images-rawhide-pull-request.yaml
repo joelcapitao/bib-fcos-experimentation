@@ -35,7 +35,7 @@ spec:
   - name: output-name
     value: fedora-coreos-rawhide
   - name: source-image
-    value: quay.io/jbtrystramtestimages/fcos:fcc-pr-4259
+    value: quay.io/jbtrystramtestimages/fcos:pr-4259
   pipelineSpec:
     description: |
       This pipeline builds Fedora CoreOS disk images (qemu, metal, etc.) for
