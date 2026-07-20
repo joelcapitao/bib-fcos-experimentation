@@ -1,0 +1,44 @@
+# Sourced from coreos/fedora-coreos-pipeline config.yaml
+# This file controls which disk image artifacts are built per architecture
+# in Konflux. 
+# Artifacts listed under "all" are built for every architecture.
+# Architecture-specific lists are merged with "all" at build time.
+default_artifacts:
+  all:
+    - qemu
+    - metal
+    - metal4k
+    - live
+    - openstack
+  aarch64:
+    - applehv
+    - aws
+    - azure
+    - gcp
+    - hetzner
+    - hyperv
+    - oraclecloud
+  ppc64le:
+    - powervs
+  s390x:
+    - ibmcloud
+    - kubevirt
+  x86_64:
+    - aliyun
+    - applehv
+    - aws
+    - azure
+    - azurestack
+    - digitalocean
+    - exoscale
+    - gcp
+    - hetzner
+    - hyperv
+    - ibmcloud
+    - kubevirt
+    - nutanix
+    - oraclecloud
+    - proxmoxve
+    - virtualbox
+    - vmware
+    - vultr

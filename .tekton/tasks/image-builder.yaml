@@ -11,10 +11,11 @@ metadata:
       Build multiple Fedora CoreOS disk images using image-builder-cli running
       on an arch-native remote VM provisioned by the Konflux multi-platform-controller.
 
-      This task builds all specified artifacts (e.g. qemu, metal) for a single
-      architecture in the same VM. Each artifact is pushed individually as an
-      OCI artifact with a config JSON carrying platform metadata
-      (os=<artifact>, architecture=<arch>).
+      This task builds all artifacts defined in artifacts.yaml for a
+      single architecture in the same VM. The artifact list is derived from
+      default_artifacts.all merged with default_artifacts.<arch>. Each artifact
+      is pushed individually as an OCI artifact with a config JSON carrying
+      platform metadata (os=<artifact>, architecture=<arch>).
 
       Blueprints and disk layout are read directly from the cloned repository.
 
@@ -44,14 +45,6 @@ spec:
         Supported values: linux/amd64, linux/arm64, linux/ppc64le, linux/s390x.
         The arch component is translated to Fedora naming (x86_64, aarch64, etc.)
         and used to locate disk/<arch>.yaml and <artifact>/<arch>.toml.
-
-    - name: ARTIFACTS
-      type: array
-      description: >
-        List of artifact types to build. Each must match a top-level directory
-        in the repository that contains per-arch blueprints (e.g. "qemu", "metal").
-        Controls the image type passed to image-builder-cli and the blueprint
-        path used. Artifacts without blueprints for the target arch are skipped.
 
     - name: SOURCE_IMAGE
       type: string
@@ -93,6 +86,15 @@ spec:
           builder-image: <pullspec>       — bootc builder image (--bootc-build-ref)
         This file is the single source of truth for image references,
         making it easy for MintMaker to bump digests automatically.
+
+    - name: ARTIFACTS_FILE
+      type: string
+      default: "artifacts.yaml"
+      description: >
+        Path (relative to the repo root) to the pipeline config file containing
+        the default_artifacts map. The artifact list for the target architecture
+        is derived from default_artifacts.all merged with default_artifacts.<arch>.
+        Artifacts without blueprints for the target arch are silently skipped.
 
     - name: OUTPUT_NAME
       type: string
@@ -138,6 +140,8 @@ spec:
         value: $(params.STORAGE_DRIVER)
       - name: ORAS_IMAGE
         value: $(params.ORAS_IMAGE)
+      - name: ARTIFACTS_FILE
+        value: $(params.ARTIFACTS_FILE)
     volumeMounts:
       - name: workdir
         mountPath: /var/workdir
@@ -159,7 +163,7 @@ spec:
         - $(params.SOURCE_ARTIFACT)=/var/workdir/source
 
     # -------------------------------------------------------------------------
-    # 2. Parse image-builder config file and export variables for the build.
+    # 2. Parse config files and export variables for the build.
     # -------------------------------------------------------------------------
     - name: validate-config
       image: quay.io/konflux-ci/task-runner:1.7.0@sha256:1c0582a85dae0949f3ec94aca95695c5d7698b371f1b76c5a78822a6249073dc
@@ -173,8 +177,11 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
+        # ------------------------------------------------------------------
+        # Parse image-builder-config.yaml for image pullspecs
+        # ------------------------------------------------------------------
         CONFIG="/var/workdir/source/${IMAGE_BUILDER_CONFIG_FILE}"
-        echo "Reading config from: ${CONFIG}"
+        echo "Reading image-builder config from: ${CONFIG}"
 
         if [ ! -f "${CONFIG}" ]; then
           echo "ERROR: config file not found: ${CONFIG}"
@@ -196,8 +203,38 @@ spec:
 
         echo "declare IBC_IMAGE=${IBC_IMAGE}" > /var/workdir/config-vars
         echo "declare BUILDER_IMAGE=${BUILDER_IMAGE}" >> /var/workdir/config-vars
-        echo "Config validated:"
+        echo "Image-builder config validated:"
         cat /var/workdir/config-vars
+
+        # ------------------------------------------------------------------
+        # Parse artifacts.yaml for the artifact list
+        # Merge default_artifacts.all with default_artifacts.<arch>
+        # ------------------------------------------------------------------
+        OCI_ARCH="${PLATFORM##*/}"
+        case "${OCI_ARCH}" in
+          amd64) ARCH="x86_64"  ;;
+          arm64) ARCH="aarch64" ;;
+          *)     ARCH="${OCI_ARCH}" ;;
+        esac
+
+        PIPELINE_CONFIG="/var/workdir/source/${ARTIFACTS_FILE}"
+        echo "Reading pipeline config from: ${PIPELINE_CONFIG}"
+
+        if [ ! -f "${PIPELINE_CONFIG}" ]; then
+          echo "ERROR: pipeline config file not found: ${PIPELINE_CONFIG}"
+          exit 1
+        fi
+
+        # Merge .default_artifacts.all and .default_artifacts.<arch> into a
+        # single newline-separated list, then write it to artifacts.txt
+        yq -r '
+          (.default_artifacts.all // []) +
+          (.default_artifacts["'"${ARCH}"'"] // [])
+          | .[]
+        ' "${PIPELINE_CONFIG}" > /var/workdir/artifacts.txt
+
+        echo "Artifacts to build for ${ARCH}:"
+        cat /var/workdir/artifacts.txt
 
     # -------------------------------------------------------------------------
     # 3. Build and push multiple disk images on the arch-native remote VM.
@@ -214,7 +251,6 @@ spec:
         - name: ssh
           mountPath: /ssh
           readOnly: true
-      args: ["$(params.ARTIFACTS[*])"]
       script: |
         #!/bin/bash
         set -e
@@ -293,10 +329,6 @@ spec:
 
         echo "ARCH: '${ARCH}'"
         echo "OCI_ARCH: '${OCI_ARCH}'"
-        echo "ARTIFACTS: $@"
-
-        # Write artifacts list to a file for the remote script
-        printf '%s\n' "$@" > /var/workdir/artifacts.txt
 
         rsync -e "ssh ${SSH_ARGS[*]}" -ra /var/workdir/artifacts.txt "$SSH_HOST:$BUILD_DIR/artifacts.txt"
 

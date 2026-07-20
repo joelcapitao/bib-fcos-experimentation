@@ -27,10 +27,6 @@ spec:
     value: quay.io/konflux-fedora/coreos-tenant/disk-images-rawhide:{{revision}}
   - name: image-expires-after
     value: ""
-  - name: artifacts
-    value:
-      - qemu
-      - metal
   - name: output-name
     value: fedora-coreos-rawhide
   - name: source-image
@@ -63,12 +59,6 @@ spec:
     - default: "false"
       description: Enable cache proxy configuration
       name: enable-cache-proxy
-    - description: List of artifact types to build (e.g. ["qemu", "metal"]).
-      name: artifacts
-      type: array
-      default:
-        - qemu
-        - metal
     - description: Base name for the produced disk image file (--output-name).
       name: output-name
       type: string
@@ -121,9 +111,8 @@ spec:
       params:
       - name: PLATFORM
         value: linux/amd64
-      - name: ARTIFACTS
-        value:
-          - $(params.artifacts[*])
+      - name: ARTIFACTS_FILE
+        value: artifacts.yaml
       - name: SOURCE_IMAGE
         value: $(params.source-image)
       - name: OUTPUT_IMAGE
