@@ -31,6 +31,7 @@ spec:
     value:
       - qemu
       - metal
+      - vmware
   - name: output-name
     value: fedora-coreos-rawhide
   - name: source-image

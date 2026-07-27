@@ -443,13 +443,14 @@ spec:
 
           # Determine image type based on artifact
           case "${artifact}" in
-            qemu)  IMAGE_TYPE="qcow2"; EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
-            metal) IMAGE_TYPE="raw";   EXT="raw";   MEDIA_TYPE="application/vnd.diskimage.raw.gzip" ;;
-            *)     IMAGE_TYPE="qcow2"; EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
-          esac
-
-          echo "IMAGE_TYPE: ${IMAGE_TYPE}"
-          echo "MEDIA_TYPE: ${MEDIA_TYPE}"
+            qemu)     IMAGE_TYPE="qcow2";    EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
+            metal)    IMAGE_TYPE="raw";      EXT="raw";   MEDIA_TYPE="application/vnd.diskimage.raw.gzip" ;;
+            vmware)   IMAGE_TYPE="ova";      EXT="ova";   MEDIA_TYPE="application/vnd.diskimage.ova.gzip" ;;
+            *)        IMAGE_TYPE="qcow2";    EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
+          esac   
+   
+          echo "IMAGE_TYPE: ${IMAGE_TYPE}"   
+          echo "MEDIA_TYPE: ${MEDIA_TYPE}"   
           echo "=== Pre-merged blueprint for ${artifact} ==="
           cat "${MERGED_BP}"
 
