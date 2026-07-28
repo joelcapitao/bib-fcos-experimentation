@@ -461,6 +461,9 @@ spec:
           # Run image-builder-cli
           echo "=== Building ${artifact} disk image ==="
           if ! podman run --rm --privileged --pull=never \
+            --security-opt=label=disable \
+            --cap-add all \
+            --device /dev/kvm \
             -v $HOME/.local/share/containers/storage:/var/lib/containers/storage \
             -v "${REPO_DIR}:/repo:ro" \
             -v "${OUTPUT_DIR}:/output" \
