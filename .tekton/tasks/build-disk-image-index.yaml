@@ -149,19 +149,17 @@ spec:
         # same repository. Any reference whose repo differs from IMAGE is
         # copied with skopeo and replaced by its new local tag.
         # ------------------------------------------------------------------
-        # XXX we probably won't need to do that when we are in the "production"
-        # konflux flow, because all these artifacts will come from the same konflux
-        # component namespace.
         TARGET_REPO="${IMAGE%%:*}"
         for i in "${!ARTIFACT_TAGS[@]}"; do
           REF="${ARTIFACT_TAGS[$i]}"
           REF_REPO="${REF%%:*}"
           REF_REPO="${REF_REPO%%@*}"
           if [ "${REF_REPO}" != "${TARGET_REPO}" ]; then
-            # Build a deterministic tag from the original reference
-            # e.g. quay.io/fedora/fedora-coreos:rawhide -> container-fedora-coreos-rawhide
-            REF_NAME=$(echo "${REF}" | sed "s|.*/||; s|[@:]|-|g")
-            LOCAL_TAG="${IMAGE}-container-${REF_NAME}"
+            # Extract architecture from the image manifest using skopeo inspect
+            REF_ARCH=$(skopeo inspect --authfile "${DOCKER_CONFIG}" "docker://${REF}" | jq -r '.Architecture')
+
+            # Build short local tag: linux-<arch>
+            LOCAL_TAG="${IMAGE}-linux-${REF_ARCH}"
             echo "=== Copying cross-repo image ${REF} -> ${LOCAL_TAG} ==="
             skopeo copy --authfile "${DOCKER_CONFIG}" \
               "docker://${REF}" "docker://${LOCAL_TAG}"
