@@ -596,5 +596,5 @@ spec:
     - name: ssh
       secret:
         optional: false
-        secretName: multi-platform-ssh-$(context.taskRun.name)
-        #secretName: own-custom-vm
+        #secretName: multi-platform-ssh-$(context.taskRun.name)
+        secretName: own-custom-vm
