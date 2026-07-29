@@ -34,7 +34,7 @@ spec:
   - name: artifacts
     value:
       - qemu
-      - metal
+      #- metal
   - name: output-name
     value: fedora-coreos-rawhide
   - name: source-image
