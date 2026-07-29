@@ -28,14 +28,17 @@ spec:
     value: quay.io/konflux-fedora/coreos-tenant/disk-images-rawhide:on-pr-{{revision}}
   - name: image-expires-after
     value: 5d
+  - name: build-platforms
+    value:
+      - linux/amd64
   - name: artifacts
     value:
       - qemu
-      - metal
+      #- metal
   - name: output-name
     value: fedora-coreos-rawhide
   - name: source-image
-    value: quay.io/konflux-fedora/coreos-tenant/fedora-coreos-rawhide@sha256:2c0a65d88c1ed571bd0f16946c801ae01d845fecbe0d406234df269afa00b2e5
+    value: quay.io/konflux-fedora/coreos-tenant/fedora-coreos-rawhide@sha256:31d221ad3a1ef9c61841c29786c4285b09f0a2a83b513fc94c18f5225e3bb594
   pipelineSpec:
     description: |
       This pipeline builds Fedora CoreOS disk images (qemu, metal, etc.) for
@@ -61,6 +64,11 @@ spec:
         1h, 2d, 3w for hours, days, and weeks, respectively.
       name: image-expires-after
       type: string
+    - name: build-platforms
+      type: array
+      default:
+        - linux/amd64
+      description: List of platforms to build the container images on. The available set of values is determined by the configuration of the multi-platform-controller.
     - default: "false"
       description: Enable cache proxy configuration
       name: enable-cache-proxy
@@ -119,9 +127,12 @@ spec:
       - clone-repository
       taskRef:
         name: image-builder
+      matrix:
+        params:
+          - name: PLATFORM
+            value:
+              - $(params.build-platforms)
       params:
-      - name: PLATFORM
-        value: linux/amd64
       - name: ARTIFACTS
         value:
           - $(params.artifacts[*])
@@ -142,8 +153,7 @@ spec:
       - name: IMAGE
         value: $(params.output-image)
       - name: IMAGES
-        value:
-          - $(tasks.build-disk-images.results.ARTIFACT_TAGS)
+        value: ["$(tasks.build-disk-images.results.ARTIFACT_TAGS[*])"]
     results:
     - name: IMAGE_URL
       value: $(tasks.build-disk-image-index.results.IMAGE_URL)
