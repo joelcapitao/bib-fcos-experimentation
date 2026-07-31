@@ -7,3 +7,6 @@ append = "ignition.platform.id=qemu console=tty0 console=ttyS0,115200n8"
 terminal_input = ["serial", "console"]
 terminal_output = ["serial", "console"]
 serial = "serial --speed=115200"
+
+[customizations.disk]
+minsize = "10GiB"
