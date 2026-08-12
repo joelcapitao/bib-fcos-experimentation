@@ -320,6 +320,8 @@ spec:
         # Variables that must expand on the remote VM (runtime):
         cat >> scripts/script-build.sh << 'REMOTESSHEOF'
 
+        sudo dnf install -y jq
+
         REPO_DIR="${BUILD_DIR}/workspaces/source"
 
         # Read artifacts list
@@ -593,4 +595,5 @@ spec:
       secret:
         optional: false
         #secretName: multi-platform-ssh-$(context.taskRun.name)
-        secretName: own-custom-vm
+        #secretName: own-custom-vm
+        secretName: linux-root-fedora-test
