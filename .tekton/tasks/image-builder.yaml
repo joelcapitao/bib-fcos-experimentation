@@ -336,10 +336,10 @@ spec:
 
         # Pull all container images to ensure we always use the latest versions.
         # The remote VM may have stale cached images from previous runs.
-        podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${IBC_IMAGE}"
-        podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${SOURCE_IMAGE}"
-        podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
-        podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${ORAS_IMAGE}"
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${IBC_IMAGE}"
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${SOURCE_IMAGE}"
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${ORAS_IMAGE}"
 
         # Tag images with local names to avoid multi-arch manifest list resolution issues.
         # When podman pulls a multi-arch image, it stores only the arch-specific manifest,
@@ -351,10 +351,10 @@ spec:
         BUILDER_IMAGE_LOCAL="localhost/builder-image:local"
         SOURCE_IMAGE_LOCAL="localhost/source-image:local"
 
-        podman tag "${BUILDER_IMAGE}" "${BUILDER_IMAGE_LOCAL}"
+        sudo podman tag "${BUILDER_IMAGE}" "${BUILDER_IMAGE_LOCAL}"
         echo "Tagged BUILDER_IMAGE: ${BUILDER_IMAGE} -> ${BUILDER_IMAGE_LOCAL}"
 
-        podman tag "${SOURCE_IMAGE}" "${SOURCE_IMAGE_LOCAL}"
+        sudo podman tag "${SOURCE_IMAGE}" "${SOURCE_IMAGE_LOCAL}"
         echo "Tagged SOURCE_IMAGE: ${SOURCE_IMAGE} -> ${SOURCE_IMAGE_LOCAL}"
 
         # ------------------------------------------------------------------
@@ -362,9 +362,9 @@ spec:
         # on the disk image artifacts.
         # ------------------------------------------------------------------
         echo "=== Extracting labels from SOURCE_IMAGE ==="
-        CONFIG_COMMIT=$(podman inspect --format '{{index .Config.Labels "vcs-ref"}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
-        CONFIG_GIT_URL=$(podman inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
-        CONFIG_GIT_REF=$(podman inspect --format '{{index .Config.Labels "com.coreos.stream"}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
+        CONFIG_COMMIT=$(sudo podman inspect --format '{{index .Config.Labels "vcs-ref"}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
+        CONFIG_GIT_URL=$(sudo podman inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
+        CONFIG_GIT_REF=$(sudo podman inspect --format '{{index .Config.Labels "com.coreos.stream"}}' "${SOURCE_IMAGE}" 2>/dev/null || echo "")
 
         echo "CONFIG_COMMIT:  ${CONFIG_COMMIT}"
         echo "CONFIG_GIT_URL: ${CONFIG_GIT_URL}"
@@ -406,7 +406,7 @@ spec:
           ORAS_USER="${AUTH_DECODED%%:*}"
           ORAS_PASS="${AUTH_DECODED#*:}"
 
-          echo "${ORAS_PASS}" | podman run --rm -i \
+          echo "${ORAS_PASS}" | sudo podman run --rm -i \
             -v "${BUILD_DIR}/.docker:/root/.docker:Z" \
             "${ORAS_IMAGE}" \
             login \
@@ -460,13 +460,12 @@ spec:
 
           # Run image-builder-cli
           echo "=== Building ${artifact} disk image ==="
-          if ! podman run --rm --privileged --pull=never \
-            -v $HOME/.local/share/containers/storage:/var/lib/containers/storage \
+          if ! sudo podman run --rm --privileged --pull=never \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
             -v "${REPO_DIR}:/repo:ro" \
             -v "${OUTPUT_DIR}:/output" \
             "${IBC_IMAGE}" \
             build "${IMAGE_TYPE}" \
-            --in-vm \
             --bootc-build-ref "${BUILDER_IMAGE_LOCAL}" \
             --bootc-ref "${SOURCE_IMAGE_LOCAL}" \
             --blueprint "/repo/blueprints/generated/${artifact}-${ARCH}.toml" \
@@ -512,7 +511,7 @@ spec:
         }
         CONFIGEOF
 
-          if ! podman run --rm \
+          if ! sudo podman run --rm \
             -v "${OUTPUT_DIR}:/output:Z" \
             -v "${BUILD_DIR}/.docker:/root/.docker:Z" \
             -w "/output" \
