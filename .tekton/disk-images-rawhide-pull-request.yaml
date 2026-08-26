@@ -31,7 +31,7 @@ spec:
   - name: output-name
     value: fedora-coreos-rawhide
   - name: source-image
-    value: quay.io/konflux-fedora/coreos-tenant/fedora-coreos-rawhide@sha256:eb66315ec3dd278d5ac98be4e1c348ec65ec907a8026498e9c6e07fcea6ac2e1
+    value: quay.io/konflux-fedora/coreos-tenant/fedora-coreos-rawhide@sha256:d1abd3d9744880ef076f77f77a3529f949ee70cbbeea3cfc4fe0636a89d039d6
   pipelineSpec:
     description: |
       This pipeline builds Fedora CoreOS disk images (qemu, metal, etc.) for
