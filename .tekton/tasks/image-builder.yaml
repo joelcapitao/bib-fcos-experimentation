@@ -31,8 +31,10 @@ metadata:
       metadata (architecture, os). The build-disk-image-index task is then
       responsible for assembling these into a single OCI index.
 
-      Artifacts without blueprints for the target arch are silently skipped.
+      Artifacts without blueprints for the target arch are skipped with a warning.
       If one artifact fails to build, the task continues with the others (best-effort).
+      A dedicated report-warnings step surfaces skipped/failed artifacts as a
+      visible warning (the step exits non-zero with onError: continue).
       The task fails only if no artifacts are successfully built.
 
 spec:
@@ -617,6 +619,60 @@ spec:
         echo "[$(date --utc -Ins)] Cleaning up build artifacts on remote VM"
         ssh "${SSH_ARGS[@]}" "$SSH_HOST" "rm -rf ${BUILD_DIR}/output ${BUILD_DIR}/workspaces ${BUILD_DIR}/scripts ${BUILD_DIR}/tekton-results ${BUILD_DIR}/config.toml ${BUILD_DIR}/.docker ${BUILD_DIR}/entitlement ${BUILD_DIR}/activation-key ${BUILD_DIR}/tmp"
         echo "[$(date --utc -Ins)] Cleanup complete"
+
+    # -------------------------------------------------------------------------
+    # 4. Surface warnings for skipped or failed artifacts.
+    #    This step exits non-zero when any artifact was skipped or failed,
+    #    making the warning visible at a glance in the Tekton dashboard.
+    #    onError: continue ensures the task still succeeds overall.
+    # -------------------------------------------------------------------------
+    - name: report-warnings
+      onError: continue
+      image: quay.io/konflux-ci/task-runner:1.7.0@sha256:1c0582a85dae0949f3ec94aca95695c5d7698b371f1b76c5a78822a6249073dc
+      computeResources:
+        limits:
+          memory: 64Mi
+        requests:
+          cpu: 50m
+          memory: 64Mi
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        REPORT_FILE="/tekton/results/BUILD_REPORT"
+        if [ ! -f "${REPORT_FILE}" ]; then
+          echo "WARNING: BUILD_REPORT not found — cannot check for skipped/failed artifacts"
+          exit 1
+        fi
+
+        BUILD_REPORT=$(cat "${REPORT_FILE}")
+        echo "=== Build Report ==="
+        echo "${BUILD_REPORT}" | jq .
+
+        SKIPPED=$(echo "${BUILD_REPORT}" | jq -r '.skipped | length')
+        FAILED=$(echo "${BUILD_REPORT}" | jq -r '.failed | length')
+        BUILT=$(echo "${BUILD_REPORT}" | jq -r '.built | length')
+
+        if [ "${FAILED}" -gt 0 ]; then
+          FAILED_LIST=$(echo "${BUILD_REPORT}" | jq -r '.failed | join(", ")')
+          echo ""
+          echo "WARNING: ${FAILED} artifact(s) failed to build: ${FAILED_LIST}"
+        fi
+
+        if [ "${SKIPPED}" -gt 0 ]; then
+          SKIPPED_LIST=$(echo "${BUILD_REPORT}" | jq -r '.skipped | join(", ")')
+          echo ""
+          echo "WARNING: ${SKIPPED} artifact(s) skipped (no blueprint for target arch): ${SKIPPED_LIST}"
+        fi
+
+        if [ "${FAILED}" -gt 0 ] || [ "${SKIPPED}" -gt 0 ]; then
+          echo ""
+          echo "Successfully built: ${BUILT} artifact(s)"
+          echo "Exiting with non-zero status to surface this warning."
+          exit 1
+        fi
+
+        echo "All ${BUILT} artifact(s) built successfully — no warnings."
 
   volumes:
     - name: workdir
