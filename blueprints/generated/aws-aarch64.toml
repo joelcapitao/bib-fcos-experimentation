@@ -16,3 +16,6 @@ append = "mitigations=auto,nosmt ignition.platform.id=aws console=ttyS0,115200n8
 terminal_input = ["serial_efi0"]
 terminal_output = ["serial_efi0"]
 serial = "serial --speed=115200 efi0"
+
+[customizations.disk]
+minsize = "10GiB"
