@@ -1,0 +1,4 @@
+# Cloud disk images should be 10G
+# This should not apply to live artifacts nor the metal image.
+[customizations.disk]
+minsize = "10GiB"
