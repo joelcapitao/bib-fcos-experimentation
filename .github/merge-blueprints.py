@@ -194,6 +194,12 @@ def generate_all(repo_root: Path, out_dir: Path) -> list[Path]:
                 layers.append(str(shared_arch))
             layers.append(str(arch_file))
 
+            # include cloud options
+            if platform not in ["metal"]:
+                disk_bp = sources / "shared" / "disk.toml"
+                if disk_bp.exists():
+                    layers.append(str(disk_bp))
+
             merged = merge_blueprints(layers)
             out_file = out_dir / f"{platform}-{arch}.toml"
             with open(out_file, "w") as f:
