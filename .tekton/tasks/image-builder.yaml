@@ -335,7 +335,7 @@ spec:
         # Variables that expand locally (build-time):
         cat > scripts/script-build.sh << REMOTESSHEOF
         #!/bin/bash
-        set -uo pipefail
+        set -uxo pipefail
 
         export BUILD_DIR="${BUILD_DIR}"
         export OUTPUT_IMAGE="${OUTPUT_IMAGE}"

@@ -11,7 +11,7 @@ which introduced the ability to use `bootc install to-filesystem` for FCOS image
 
 ## Goals
 
- 1. Identify gaps between current `image-builder-cli` capabilities and FCOS requirements
+ 1. Identify gaps between current `image-builder` capabilities and FCOS requirements
  2. Document the missing features/stages needed for full FCOS support
  3. Propose solutions that can be contributed upstream to `osbuild/images`.
  4. Develop and iterate on an image-builder Tekton task for Konflux.
@@ -95,7 +95,7 @@ alias ibc='sudo podman run --rm --privileged \
            -v /var/lib/containers/storage:/var/lib/containers/storage \
            -v ./output:/output \
            -v .:/srv \
-           ghcr.io/osbuild/image-builder-cli:latest'
+           ghcr.io/osbuild/image-builder:latest'
 
 # Regenerate all merged blueprints (sources → generated)
 python3 .github/merge-blueprints.py --generate-all
