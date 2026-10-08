@@ -137,5 +137,20 @@ CI (`check-blueprints.yaml`) will fail if generated files are out of date.
 Console kargs follow the canonical FCOS
 [platforms.yaml](https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml).
 
-## Current Issues
+## Konflux output
+
+The output of the pipelines in `.tekton` is an OCI manifest containing all the built disk images
+as well as the original container.
+
+The disk images entries are identified with the `artifactType` attribute, built injecting the
+platform and the file extension.
+e.g. for the qemu artifact, the resulting `artifactType` string
+would be `application/vnd.diskimage.qemu.qcow2`.
+
+So retrieving the QEMU disk image can be done with :
+```
+DIGEST=$(oras manifest fetch <registry>/<repo>:<tag> | \
+  jq -r '.manifests[] | select(.artifactType=="application/vnd.diskimage.qemu.qcow2") | .digest')
+oras pull <registry>/<repo>@${DIGEST}
+```
 
