@@ -55,6 +55,10 @@ which introduced the ability to use `bootc install to-filesystem` for FCOS image
 │       ├── metal-aarch64.toml
 │       └── ...                   # One file per platform-arch combination
 │
+├── iso/
+│   ├── Containerfile             # Derives an FCOS image for generic live ISO builds
+│   └── patches/                  # Temporary CoreOS live/dracut compatibility patches
+│
 ├── image-builder-config.yaml     # Builder and CLI image references
 └── platforms.yaml                # Canonical console kargs per arch/platform (reference)
 ```
@@ -123,6 +127,62 @@ cosa run -c --qemu-image output/fedora-coreos/fedora-coreos-rawhide.qcow2
 kola run --qemu-image output/fedora-coreos/fedora-coreos-rawhide.qcow2
 ```
 
+### Experimental live ISO
+
+The `iso/Containerfile` derives an image-builder ready bootc image from FCOS.
+It installs the EFI and ISO build tools required by Image Builder, adds
+`dmsquash-live` to the initramfs, provides an FCOS live GRUB entry, and
+rebuilds the initramfs.
+
+The resulting generic ISO stores its EROFS root filesystem at `LiveOS/squashfs.img`.
+
+> [!IMPORTANT]
+> Generic live ISO support depends on the still-unmerged
+> [image-builder PR #2414](https://github.com/osbuild/image-builder/pull/2414/).
+> The Image Builder CLI container used by `ibc` must be built from that PR. The
+> alias below uses the PR build; do not replace it with the upstream
+> `latest` image while the PR remains unmerged.
+
+The Containerfile derives directly from `TARGET_FCOS_IMAGE`, which defaults to
+`quay.io/fedora/fedora-coreos:rawhide`. Build the derived image with rootful
+Podman because the `ibc` alias mounts rootful container storage into Image
+Builder:
+
+```bash
+ISO_BOOTC_IMAGE=localhost/fcos-live-iso:latest
+
+alias ibc='sudo podman run --rm --privileged \
+           --network=none \
+           -v /var/lib/containers/storage:/var/lib/containers/storage \
+           -v ./output:/output \
+           -v .:/srv \
+           quay.io/rchandar/image-builder-fork'
+
+sudo podman build --tag "$ISO_BOOTC_IMAGE" iso/
+
+ibc build generic-iso \
+          --bootc-ref "$ISO_BOOTC_IMAGE" \
+          --output-dir fedora-coreos \
+          --output-name fedora-coreos-rawhide \
+          --with-buildlog \
+          --with-manifest \
+           --bootc-default-fs ext4
+```
+The ISO is written to
+`output/fedora-coreos/fedora-coreos-rawhide.iso`.
+
+The compatibility patches under `iso/patches/` adapt the FCOS
+`35coreos-live` dracut module to Image Builder's generic ISO layout:
+
+- `live-generator.patch` lets `dmsquash-live` mount the EROFS sysroot when
+  `rd.live.image` is present and sets up the transient `/etc` bind mount.
+- `module-setup.patch` creates the live-initramfs marker expected by FCOS.
+- `ostree-cmdline.patch` preserves `prepare-root.conf`, where the Containerfile
+  disables composefs because it is incompatible with the EROFS live root.
+
+These patches target upstream FCOS files and may need to be rebased when those
+files change.
+
 ### Adding a new platform
 
 1. Create `blueprints/sources/<platform>/<arch>.toml` for each supported arch.
@@ -138,4 +198,3 @@ Console kargs follow the canonical FCOS
 [platforms.yaml](https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml).
 
 ## Current Issues
-
