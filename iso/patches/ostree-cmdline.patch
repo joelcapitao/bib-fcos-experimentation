@@ -1,0 +1,19 @@
+diff --git a/overlay.d/05core/usr/lib/dracut/modules.d/35coreos-live/ostree-cmdline.sh b/overlay.d/05core/usr/lib/dracut/modules.d/35coreos-live/ostree-cmdline.sh
+index ffeb94b7..574d5b9c 100755
+--- a/overlay.d/05core/usr/lib/dracut/modules.d/35coreos-live/ostree-cmdline.sh
++++ b/overlay.d/05core/usr/lib/dracut/modules.d/35coreos-live/ostree-cmdline.sh
+@@ -22,10 +22,12 @@ case "${1:-unset}" in
+         # anyway but ostree-prepare-root still wants to e.g. remount `/etc`.
+         # Could tweak the logic there, but for now just mask the file entirely.
+         # We have our own /var and /etc transient mounts.
+-        mount --bind /dev/null /usr/lib/ostree/prepare-root.conf
++
++        # Commenting out the old bind mount to /dev/null
++        # mount --bind /dev/null /usr/lib/ostree/prepare-root.conf
+         ;;
+     stop)
+-        umount -l /usr/lib/ostree/prepare-root.conf
++        #umount -l /usr/lib/ostree/prepare-root.conf
+         umount -l /proc/cmdline
+         rm /tmp/cmdline
+         ;;

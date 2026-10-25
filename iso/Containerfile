@@ -1,0 +1,52 @@
+ARG TARGET_FCOS_IMAGE=quay.io/fedora/fedora-coreos:rawhide
+FROM ${TARGET_FCOS_IMAGE}
+
+RUN dnf -y install grub2-efi-*-cdboot xorriso isomd5sum dracut-live erofs-utils shim patch python && dnf clean all
+RUN mkdir /boot/efi && cp -r /usr/lib/efi/shim/*/EFI /boot/efi && cp -r /usr/lib/efi/grub2/*/EFI/* /boot/efi/EFI/
+
+# Override using composefs for ostree (it is incompatible with the erofs rootfs)
+RUN cat <<EOF > /usr/lib/ostree/prepare-root.conf
+[composefs]
+enabled = no
+[sysroot]
+readonly = true
+EOF
+
+RUN sed -i '7i\ConditionPathExists=/run/media/iso/images/pxeboot/rootfs.img' /usr/lib/dracut/modules.d/35coreos-live/coreos-liveiso-persist-osmet.service
+
+COPY ./patches /tmp/patches
+
+RUN patch -p1 /usr/lib/dracut/modules.d/35coreos-live/live-generator < /tmp/patches/live-generator.patch
+RUN patch -p1 /usr/lib/dracut/modules.d/35coreos-live/module-setup.sh < /tmp/patches/module-setup.patch
+RUN patch -p1 /usr/lib/dracut/modules.d/35coreos-live/ostree-cmdline.sh < /tmp/patches/ostree-cmdline.patch
+
+# Include the dmsquash-live module in the initramfs
+RUN cat <<EOF > /usr/lib/dracut/dracut.conf.d/10-dmsquash-live.conf
+compress="xz"
+add_dracutmodules+=" qemu qemu-net livenet dmsquash-live "
+early_microcode="no"
+EOF
+
+# Override the default ISO menus
+RUN mkdir -p /usr/lib/image-builder/bootc
+RUN cat <<EOF > /usr/lib/image-builder/bootc/iso.yaml
+label: fedora-coreos
+kernel_args:
+  - console=tty0
+  - console=ttyS0
+grub2:
+  timeout: 5
+  entries:
+    - name: Fedora CoreOS (Live)
+      linux: \${kernelpath} \${root} ignition.firstboot ignition.platform.id=metal coreos.liveiso=fedora-coreos
+      initrd: \${initrdpath}
+EOF
+
+
+# Rebuild the initrd
+RUN set -xe; kver=$(ls /usr/lib/modules); env DRACUT_NO_XATTR=1 dracut -vf /usr/lib/modules/$kver/initramfs.img "$kver"
+
+# Mask services that aren't compatible with running from an ISO
+RUN systemctl mask bootloader-update.service
+
+RUN bootc container lint
