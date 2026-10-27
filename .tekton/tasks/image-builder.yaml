@@ -57,10 +57,9 @@ spec:
     - name: OUTPUT_IMAGE
       type: string
       description: >
-        Target OCI image reference where the OCI index will be pushed.
-        Individual artifacts are pushed with temporary tags (<OUTPUT_IMAGE>-<artifact>)
-        and then combined into the final index at OUTPUT_IMAGE.
-        e.g. quay.io/redhat-user-workloads/fcos-tenant/fcos-disk:rawhide
+        Base OCI image reference for temporary artifact tags. The task appends
+        the target architecture and artifact name; the pipeline assembles those
+        artifacts into the final index.
 
     - name: ORAS_IMAGE
       type: string
@@ -266,6 +265,7 @@ spec:
         # Resolve arch from platform (linux/amd64 → amd64)
         # ------------------------------------------------------------------
         OCI_ARCH="${PLATFORM##*/}"
+        OUTPUT_IMAGE="${OUTPUT_IMAGE}-linux-${OCI_ARCH}"
 
         # ------------------------------------------------------------------
         # Translate OCI arch names to Fedora/RPM arch names for file paths
@@ -624,5 +624,4 @@ spec:
     - name: ssh
       secret:
         optional: false
-        #secretName: multi-platform-ssh-$(context.taskRun.name)
-        secretName: own-custom-vm
+        secretName: multi-platform-ssh-$(context.taskRun.name)

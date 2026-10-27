@@ -32,11 +32,15 @@ spec:
     value: fedora-coreos-rawhide
   - name: source-image
     value: quay.io/konflux-fedora/coreos-tenant/fedora-coreos-rawhide@sha256:45e2427700c49d069b0766c0bc1300ba2c3414b06f73268c14e343b2814d4506
+  - name: build-platforms
+    value:
+      - linux/x86_64
+      - linux/arm64
   pipelineSpec:
     description: |
       This pipeline builds Fedora CoreOS disk images (qemu, metal, etc.) for
-      multiple artifacts within a single architecture, then assembles them
-      into an OCI index.
+      multiple artifacts and architectures, then assembles them into an OCI
+      index.
 
       The OCI index uses custom platform metadata (platform.os=<artifact>)
       to identify each disk image type, allowing retrieval with:
@@ -66,6 +70,9 @@ spec:
     - description: Fully qualified pullspec of the upstream FCOS bootc container image.
       name: source-image
       type: string
+    - description: List of platforms to build the images on.
+      name: build-platforms
+      type: array
     tasks:
     - name: init
       params:
@@ -104,24 +111,26 @@ spec:
       workspaces:
       - name: basic-auth
         workspace: git-auth
-    - name: build-disk-images
+    - matrix:
+        params:
+          - name: PLATFORM
+            value: $(params.build-platforms)
+      name: build-disk-images
       runAfter:
       - clone-repository
       taskRef:
         name: image-builder
       params:
-      - name: PLATFORM
-        value: linux/amd64
-      - name: ARTIFACTS_FILE
-        value: artifacts.yaml
-      - name: SOURCE_IMAGE
-        value: $(params.source-image)
-      - name: OUTPUT_IMAGE
-        value: $(params.output-image)-linux-amd64
-      - name: OUTPUT_NAME
-        value: $(params.output-name)
-      - name: SOURCE_ARTIFACT
-        value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
+        - name: ARTIFACTS_FILE
+          value: artifacts.yaml
+        - name: SOURCE_IMAGE
+          value: $(params.source-image)
+        - name: OUTPUT_IMAGE
+          value: $(params.output-image)
+        - name: OUTPUT_NAME
+          value: $(params.output-name)
+        - name: SOURCE_ARTIFACT
+          value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
     - name: build-disk-image-index
       runAfter:
       - build-disk-images
@@ -132,7 +141,7 @@ spec:
         value: $(params.output-image)
       - name: IMAGES
         value:
-          - $(tasks.build-disk-images.results.ARTIFACT_TAGS)
+          - $(tasks.build-disk-images.results.ARTIFACT_TAGS[*])
     results:
     - name: IMAGE_URL
       value: $(tasks.build-disk-image-index.results.IMAGE_URL)
