@@ -9,3 +9,6 @@ empty = true
 
 [customizations.kernel]
 append = "mitigations=auto,nosmt ignition.platform.id=openstack console=hvc0 console=tty0"
+
+[customizations.disk]
+minsize = "10GiB"

@@ -16,3 +16,6 @@ append = "mitigations=auto,nosmt $ignition_firstboot ignition.platform.id=qemu c
 terminal_input = ["serial", "console"]
 terminal_output = ["serial", "console"]
 serial = "serial --speed=115200"
+
+[customizations.disk]
+minsize = "10GiB"

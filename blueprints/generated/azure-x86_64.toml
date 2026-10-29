@@ -9,3 +9,6 @@ empty = true
 
 [customizations.kernel]
 append = "mitigations=auto,nosmt $ignition_firstboot ignition.platform.id=azure console=tty0 console=ttyS0,115200n8"
+
+[customizations.disk]
+minsize = "10GiB"
