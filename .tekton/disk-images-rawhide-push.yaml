@@ -110,7 +110,7 @@ spec:
         name: image-builder
       params:
       - name: PLATFORM
-        value: linux/amd64
+        value: linux-root/amd64
       - name: ARTIFACTS_FILE
         value: artifacts.yaml
       - name: SOURCE_IMAGE

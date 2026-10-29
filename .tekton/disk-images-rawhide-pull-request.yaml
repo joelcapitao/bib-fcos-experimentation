@@ -66,6 +66,10 @@ spec:
     - description: Fully qualified pullspec of the upstream FCOS bootc container image.
       name: source-image
       type: string
+    - name: build-platforms
+      value:
+        - linux/x86_64
+        - linux/arm64
     tasks:
     - name: init
       params:
@@ -104,14 +108,17 @@ spec:
       workspaces:
       - name: basic-auth
         workspace: git-auth
-    - name: build-disk-images
+    - matrix:
+        params:
+          - name: PLATFORM
+            value:
+              - $(params.build-platforms)
+      name: build-disk-images
       runAfter:
       - clone-repository
       taskRef:
         name: image-builder
       params:
-      - name: PLATFORM
-        value: linux/amd64
       - name: ARTIFACTS_FILE
         value: artifacts.yaml
       - name: SOURCE_IMAGE
@@ -132,7 +139,7 @@ spec:
         value: $(params.output-image)
       - name: IMAGES
         value:
-          - $(tasks.build-disk-images.results.ARTIFACT_TAGS)
+          - $(tasks.build-disk-images.results.ARTIFACT_TAGS[*])
     results:
     - name: IMAGE_URL
       value: $(tasks.build-disk-image-index.results.IMAGE_URL)
