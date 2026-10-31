@@ -1,4 +1,4 @@
 # Image Builder configuration
 # MintMaker will bump the digests in this file automatically.
 image-builder-cli: "ghcr.io/osbuild/image-builder@sha256:fa5ccb71144125572ccbec809188b57d7703b51a9605fe5980d1803efacda27c"
-builder-image: "quay.io/bootc-devel/fedora-bootc-rawhide-standard@sha256:05d89f8c30de98524c5ea1a48941fe6716320e634e452d5f4d380792507adae8"
+builder-image: "quay.io/bootc-devel/fedora-bootc-rawhide-standard@sha256:bcd37afe7bc68ae86a57e6c6e41634a0370858ac54ae31b752ca371fad827c8d"
