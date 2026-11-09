@@ -279,7 +279,7 @@ spec:
         # ------------------------------------------------------------------
         # Set up SSH access to the remote VM
         # ------------------------------------------------------------------
-        echo "[$(date --utc -Ins)] Prepare connection"
+        echo "[$(date --utc -Ins)] Prepare build host"
 
         mkdir -p ~/.ssh
         ls -la /ssh
@@ -288,19 +288,46 @@ spec:
           #no server could be provisioned
           cat /ssh/error
           exit 1
+        fi
+        SSH_HOST=$(cat /ssh/host)
+        export SSH_HOST
+
+        if [ "$SSH_HOST" == "localhost" ] ; then
+          IS_LOCALHOST=true
+          echo "Localhost detected; running build in cluster"
         elif [ -e "/ssh/otp" ]; then
-          curl --cacert /ssh/otp-ca -XPOST -d @/ssh/otp $(cat /ssh/otp-server) >~/.ssh/id_rsa
+          if ! curl --fail --cacert /ssh/otp-ca -XPOST -d @/ssh/otp "$(cat /ssh/otp-server)" >~/.ssh/id_rsa; then
+            echo "Failed to retrieve SSH key from the OTP server. This can happen when the PipelineRun retry option re-runs a task whose one-time credential was already consumed. Please, start a new build, and if problem persists, please report it as an MPC bug." >&2
+            exit 1
+          fi
           echo "" >> ~/.ssh/id_rsa
         else
           cp /ssh/id_rsa ~/.ssh
         fi
-        chmod 0400 ~/.ssh/id_rsa
-        export SSH_HOST=$(cat /ssh/host)
-        export BUILD_DIR="$(cat /ssh/user-dir)/disk-images"
-        export SSH_ARGS=(-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -i ~/.ssh/id_rsa)
+
+        # ------------------------------------------------------------------
+        # Abstract over where the build runs: on the remote VM through SSH,
+        # or directly in this step when the MPC allocated "localhost".
+        #   on_build_host <cmd...>  run a command on the build host
+        #   RSYNC_ARGS              rsync options to reach the build host
+        #   BUILD_HOST_PREFIX       rsync destination prefix ("host:" or "")
+        # ------------------------------------------------------------------
+        if [[ $IS_LOCALHOST ]]; then
+          export BUILD_DIR="/var/workdir/disk-images"
+          BUILD_HOST_PREFIX=""
+          RSYNC_ARGS=(-ra)
+          on_build_host() { bash -c "$*"; }
+        else
+          chmod 0400 ~/.ssh/id_rsa
+          export BUILD_DIR="$(cat /ssh/user-dir)/disk-images"
+          export SSH_ARGS=(-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -i ~/.ssh/id_rsa)
+          BUILD_HOST_PREFIX="$SSH_HOST:"
+          RSYNC_ARGS=(-e "ssh ${SSH_ARGS[*]}" -ra)
+          on_build_host() { ssh "${SSH_ARGS[@]}" "$SSH_HOST" "$@"; }
+        fi
         mkdir -p scripts
         echo "$BUILD_DIR"
-        ssh "${SSH_ARGS[@]}" "$SSH_HOST" mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/entitlement" "$BUILD_DIR/activation-key"
+        on_build_host mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/entitlement" "$BUILD_DIR/activation-key"
 
         if [ ! -n "${CONFIG_TOML_FILE}" ]; then
           echo "No CONFIG_TOML_FILE specified"
@@ -316,21 +343,21 @@ spec:
         echo "Using the following config.toml file $CONFIG_TOML_FILE:"
         cat /var/workdir/source/$CONFIG_TOML_FILE
 
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra "/var/workdir/source/$CONFIG_TOML_FILE" "$SSH_HOST:$BUILD_DIR/config.toml"
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra "$HOME/.docker/" "$SSH_HOST:$BUILD_DIR/.docker/"
+        rsync "${RSYNC_ARGS[@]}" "/var/workdir/source/$CONFIG_TOML_FILE" "${BUILD_HOST_PREFIX}$BUILD_DIR/config.toml"
+        rsync "${RSYNC_ARGS[@]}" "$HOME/.docker/" "${BUILD_HOST_PREFIX}$BUILD_DIR/.docker/"
         # Rsync activation-key for remote registration or entitlement certificates if provided
         if [ -e "/activation-key/org" ]; then
           echo "Syncing activation-key for remote registration"
-          rsync -e "ssh ${SSH_ARGS[*]}" -ra /activation-key/ "$SSH_HOST:$BUILD_DIR/activation-key/"
+          rsync "${RSYNC_ARGS[@]}" /activation-key/ "${BUILD_HOST_PREFIX}$BUILD_DIR/activation-key/"
         elif [ -d "/entitlement" ] && [ "$(ls -A /entitlement)" ]; then
           echo "Syncing provided entitlement certificates"
-          rsync -e "ssh ${SSH_ARGS[*]}" -ra /entitlement/ "$SSH_HOST:$BUILD_DIR/entitlement/"
+          rsync "${RSYNC_ARGS[@]}" /entitlement/ "${BUILD_HOST_PREFIX}$BUILD_DIR/entitlement/"
         fi
 
         echo "ARCH: '${ARCH}'"
         echo "OCI_ARCH: '${OCI_ARCH}'"
 
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra /var/workdir/artifacts.txt "$SSH_HOST:$BUILD_DIR/artifacts.txt"
+        rsync "${RSYNC_ARGS[@]}" /var/workdir/artifacts.txt "${BUILD_HOST_PREFIX}$BUILD_DIR/artifacts.txt"
 
         # Variables that expand locally (build-time):
         cat > scripts/script-build.sh << REMOTESSHEOF
@@ -353,6 +380,12 @@ spec:
         cat >> scripts/script-build.sh << 'REMOTESSHEOF'
 
         REPO_DIR="${BUILD_DIR}/workspaces/source"
+
+        # When running in-cluster (localhost) we are root and sudo may be missing.
+        # Small noop alias for sudo
+        if [ "$(id -u)" -eq 0 ] && ! command -v sudo >/dev/null 2>&1; then
+          sudo() { "$@"; }
+        fi
 
         # Read artifacts list
         mapfile -t ARTIFACTS < "${BUILD_DIR}/artifacts.txt"
@@ -601,21 +634,21 @@ spec:
 
         REMOTESSHEOF
 
-        # make scripts executable and sync them to the cloud VM
+        # make scripts executable and sync them to the build host
         chmod +x scripts/script-build.sh
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra scripts "$SSH_HOST:$BUILD_DIR"
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra /var/workdir/source/ "$SSH_HOST:$BUILD_DIR/workspaces/source/"
+        rsync "${RSYNC_ARGS[@]}" scripts "${BUILD_HOST_PREFIX}$BUILD_DIR"
+        rsync "${RSYNC_ARGS[@]}" /var/workdir/source/ "${BUILD_HOST_PREFIX}$BUILD_DIR/workspaces/source/"
 
-        ssh "${SSH_ARGS[@]}" "$SSH_HOST" "$BUILD_DIR/scripts/script-build.sh"
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra "$SSH_HOST:$BUILD_DIR/tekton-results/" "/tekton/results/"
+        on_build_host "$BUILD_DIR/scripts/script-build.sh"
+        rsync "${RSYNC_ARGS[@]}" "${BUILD_HOST_PREFIX}$BUILD_DIR/tekton-results/" "/tekton/results/"
 
         # ------------------------------------------------------------------
-        # Clean up all build artifacts on the remote VM to prevent stale
+        # Clean up all build artifacts on the build host to prevent stale
         # files from interfering with subsequent runs (e.g. gzip refusing
         # to overwrite an existing .gz file).
         # ------------------------------------------------------------------
-        echo "[$(date --utc -Ins)] Cleaning up build artifacts on remote VM"
-        ssh "${SSH_ARGS[@]}" "$SSH_HOST" "rm -rf ${BUILD_DIR}/output ${BUILD_DIR}/workspaces ${BUILD_DIR}/scripts ${BUILD_DIR}/tekton-results ${BUILD_DIR}/config.toml ${BUILD_DIR}/.docker ${BUILD_DIR}/entitlement ${BUILD_DIR}/activation-key ${BUILD_DIR}/tmp"
+        echo "[$(date --utc -Ins)] Cleaning up build artifacts on build host"
+        on_build_host "rm -rf ${BUILD_DIR}/output ${BUILD_DIR}/workspaces ${BUILD_DIR}/scripts ${BUILD_DIR}/tekton-results ${BUILD_DIR}/config.toml ${BUILD_DIR}/.docker ${BUILD_DIR}/entitlement ${BUILD_DIR}/activation-key ${BUILD_DIR}/tmp"
         echo "[$(date --utc -Ins)] Cleanup complete"
 
   volumes:
