@@ -33,8 +33,8 @@ spec:
     value: quay.io/konflux-fedora/coreos-tenant/fedora-coreos-rawhide@sha256:45e2427700c49d069b0766c0bc1300ba2c3414b06f73268c14e343b2814d4506
   - name: build-platforms
     value:
-      - linux/x86_64
-      - linux/arm64
+      - linux-root/arm64
+      - linux-root/amd64
   pipelineSpec:
     description: |
       This pipeline builds Fedora CoreOS disk images (qemu, metal, etc.) for

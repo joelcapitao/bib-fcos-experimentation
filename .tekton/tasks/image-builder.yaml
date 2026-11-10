@@ -383,8 +383,10 @@ spec:
 
         # When running in-cluster (localhost) we are root and sudo may be missing.
         # Small noop alias for sudo
+        # (an alias rather than a function, so `set -x` doesn't trace each call twice)
         if [ "$(id -u)" -eq 0 ] && ! command -v sudo >/dev/null 2>&1; then
-          sudo() { "$@"; }
+          shopt -s expand_aliases
+          alias sudo=''
         fi
 
         # Read artifacts list
