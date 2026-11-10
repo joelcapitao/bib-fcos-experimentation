@@ -68,6 +68,13 @@ spec:
         OCI image for the oras CLI tool, used to push artifacts with custom
         platform metadata and create the OCI index.
 
+    - name: TASK_RUNNER_IMAGE
+      type: string
+      default: "quay.io/konflux-ci/task-runner:4.0.0@sha256:ab7440e1101af1ff0418e16badede2f1590664d3189099030bf3f782371bd9da"
+      description: >
+        OCI image providing CLI tools not available on the build
+        host, so it they are run through podman. Input is passed through stdin.
+
     - name: SOURCE_ARTIFACT
       type: string
       description: >
@@ -139,6 +146,8 @@ spec:
         value: $(params.STORAGE_DRIVER)
       - name: ORAS_IMAGE
         value: $(params.ORAS_IMAGE)
+      - name: TASK_RUNNER_IMAGE
+        value: $(params.TASK_RUNNER_IMAGE)
       - name: ARTIFACTS_FILE
         value: $(params.ARTIFACTS_FILE)
     volumeMounts:
@@ -371,6 +380,7 @@ spec:
         export OUTPUT_NAME="${OUTPUT_NAME}"
         export IBC_IMAGE="${IBC_IMAGE}"
         export ORAS_IMAGE="${ORAS_IMAGE}"
+        export TASK_RUNNER_IMAGE="${TASK_RUNNER_IMAGE}"
         export ARCH="${ARCH}"
         export OCI_ARCH="${OCI_ARCH}"
 
@@ -407,6 +417,13 @@ spec:
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${SOURCE_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${ORAS_IMAGE}"
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${TASK_RUNNER_IMAGE}"
+
+        # jq is not installed on the build host: run it in a container.
+        # It only reads from stdin, e.g. `jq -r '.foo' < file` or `echo "$json" | jq .`
+        jq() {
+          sudo podman run --rm -i --pull=never --network=none --entrypoint jq "${TASK_RUNNER_IMAGE}" "$@"
+        }
 
         # Tag images with local names to avoid multi-arch manifest list resolution issues.
         # When podman pulls a multi-arch image, it stores only the arch-specific manifest,
@@ -466,7 +483,7 @@ spec:
 
         # Extract auth from config.json and decode it
         # The config.json has format: {"auths": {"quay.io/org/repo": {"auth": "base64(user:pass)"}}}
-        AUTH_B64=$(jq -r ".auths[\"${REGISTRY_PATH}\"].auth // empty" "${BUILD_DIR}/.docker/config.json")
+        AUTH_B64=$(jq -r ".auths[\"${REGISTRY_PATH}\"].auth // empty" < "${BUILD_DIR}/.docker/config.json")
 
         if [ -n "${AUTH_B64}" ]; then
           AUTH_DECODED=$(echo "${AUTH_B64}" | base64 -d)
@@ -483,7 +500,7 @@ spec:
         else
           echo "WARNING: No auth found for ${REGISTRY_PATH} in config.json"
           echo "Available registries:"
-          jq -r '.auths | keys[]' "${BUILD_DIR}/.docker/config.json"
+          jq -r '.auths | keys[]' < "${BUILD_DIR}/.docker/config.json"
         fi
 
         # Initialize build report
