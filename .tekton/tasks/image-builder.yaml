@@ -474,8 +474,16 @@ spec:
           fi
 
           # Determine image type based on artifact
+          IMAGE_BUILDER_ARGS=()
           case "${artifact}" in
             qemu)  IMAGE_TYPE="qcow2"; EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
+            openstack)
+              IMAGE_TYPE="qcow2"; EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2"
+              if [ "${ARCH}" = "x86_64" ]; then
+                # The blueprint supplies rw and the platform's console order.
+                IMAGE_BUILDER_ARGS+=(--bootc-no-default-kernel-args)
+              fi
+              ;;
             metal) IMAGE_TYPE="raw";   EXT="raw";   MEDIA_TYPE="application/vnd.diskimage.raw.gzip" ;;
             *)     IMAGE_TYPE="qcow2"; EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
           esac
@@ -500,6 +508,7 @@ spec:
             build "${IMAGE_TYPE}" \
             --bootc-build-ref "${BUILDER_IMAGE_LOCAL}" \
             --bootc-ref "${SOURCE_IMAGE_LOCAL}" \
+            "${IMAGE_BUILDER_ARGS[@]}" \
             --blueprint "/repo/blueprints/generated/${artifact}-${ARCH}.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
