@@ -81,6 +81,15 @@ which introduced the ability to use `bootc install to-filesystem` for FCOS image
 
 ## Usage
 
+### KubeVirt container-disk artifacts
+
+KubeVirt x86_64 is packaged and published directly by Buildah as an OCI
+container-disk image at <OUTPUT_IMAGE>-kubevirt with linux/amd64 metadata.
+The remote VM needs Buildah. KubeVirt is excluded from ARTIFACT_TAGS
+to avoid conflicting with the source container's linux/amd64 index entry.
+
+### Generic disk images
+
 ```bash
 TARGET_FCOS_IMAGE=quay.io/fedora/fedora-coreos:rawhide
 BUILDER=quay.io/bootc-devel/fedora-bootc-rawhide-standard
@@ -153,4 +162,3 @@ DIGEST=$(oras manifest fetch <registry>/<repo>:<tag> | \
   jq -r '.manifests[] | select(.artifactType=="application/vnd.diskimage.qemu.qcow2") | .digest')
 oras pull <registry>/<repo>@${DIGEST}
 ```
-
