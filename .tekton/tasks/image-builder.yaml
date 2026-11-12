@@ -484,9 +484,19 @@ spec:
           # application/vnd.diskimage.<artifact>.<filetype> so that each
           # entry in the resulting OCI index can be distinguished by its
           # artifactType
+          BOOTC_ARGS=(--bootc-build-ref "${BUILDER_IMAGE_LOCAL}" --bootc-ref "${SOURCE_IMAGE_LOCAL}")
           case "${artifact}" in
             qemu)  IMAGE_TYPE="qcow2"; EXT="qcow2"; FILETYPE="qcow2" ;;
             metal) IMAGE_TYPE="raw";   EXT="raw";   FILETYPE="raw.gzip" ;;
+            kubevirt)
+              if [ "${ARCH}" != "x86_64" ]; then
+                echo "INFO: KubeVirt builds currently support x86_64 only"
+                BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c '.skipped += ["kubevirt"]')
+                continue
+              fi
+              IMAGE_TYPE="qcow2"; EXT="qcow2"; FILETYPE="qcow2"
+              BOOTC_ARGS+=(--bootc-no-default-kernel-args)
+              ;;
             *)     IMAGE_TYPE="qcow2"; EXT="qcow2"; FILETYPE="qcow2" ;;
           esac
           MEDIA_TYPE="application/vnd.diskimage.${artifact}.${FILETYPE}"
@@ -509,8 +519,7 @@ spec:
             -v "${OUTPUT_DIR}:/output" \
             "${IBC_IMAGE}" \
             build "${IMAGE_TYPE}" \
-            --bootc-build-ref "${BUILDER_IMAGE_LOCAL}" \
-            --bootc-ref "${SOURCE_IMAGE_LOCAL}" \
+            "${BOOTC_ARGS[@]}" \
             --blueprint "/repo/blueprints/generated/${artifact}-${ARCH}.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
@@ -529,6 +538,27 @@ spec:
           if [ -z "${DISK_FILE}" ]; then
             echo "ERROR: No ${EXT} file found for ${artifact}"
             BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".failed += [\"$artifact\"]")
+            continue
+          fi
+
+          # Package and publish the KubeVirt container disk directly with Buildah.
+          if [ "${artifact}" = "kubevirt" ]; then
+            ARTIFACT_TAG="${OUTPUT_IMAGE}-kubevirt"
+            if (
+              CONTAINER=$(sudo buildah from --arch amd64 --os linux scratch) &&
+              trap 'sudo buildah rm "${CONTAINER}" >/dev/null' EXIT &&
+              sudo buildah copy --chown=107:107 --chmod=0444 "${CONTAINER}" "${DISK_FILE}" /disk/disk.qcow2 &&
+              sudo buildah config --user 107 --label "org.opencontainers.image.base.name=${SOURCE_IMAGE}" "${CONTAINER}" &&
+              sudo buildah commit --format oci --timestamp 0 \
+                --authfile "${BUILD_DIR}/.docker/config.json" \
+                "${CONTAINER}" "docker://${ARTIFACT_TAG}"
+            ); then
+              echo "SUCCESS: KubeVirt container disk pushed to ${ARTIFACT_TAG}"
+              BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c '.built += ["kubevirt"]')
+            else
+              echo "ERROR: Failed to package or push KubeVirt"
+              BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c '.failed += ["kubevirt"]')
+            fi
             continue
           fi
 
