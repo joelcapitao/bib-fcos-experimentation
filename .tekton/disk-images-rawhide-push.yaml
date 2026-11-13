@@ -37,9 +37,13 @@ spec:
       multiple artifacts within a single architecture, then assembles them
       into an OCI index.
 
-      The OCI index uses custom platform metadata (platform.os=<artifact>)
-      to identify each disk image type, allowing retrieval with:
-        oras pull --platform qemu/amd64 <registry>/<repo>:<tag>
+      Each disk image entry in the OCI index carries an artifactType of
+      application/vnd.diskimage.<artifact>.<filetype> (e.g.
+      application/vnd.diskimage.qemu.qcow2) to identify its disk image
+      type, allowing retrieval with:
+        DIGEST=$(oras manifest fetch <registry>/<repo>:<tag> | \
+          jq -r '.manifests[] | select(.artifactType=="application/vnd.diskimage.qemu.qcow2") | .digest')
+        oras pull <registry>/<repo>@${DIGEST}
     params:
     - description: Source Repository URL
       name: git-url
