@@ -5,11 +5,6 @@
 # Architecture-specific lists are merged with "all" at build time.
 default_artifacts:
   all:
-    - qemu
-    - metal
-    - metal4k
-    - live
-    - openstack
   aarch64:
     - applehv
     - aws
@@ -24,21 +19,4 @@ default_artifacts:
     - ibmcloud
     - kubevirt
   x86_64:
-    - aliyun
-    - applehv
-    - aws
-    - azure
-    - azurestack
-    - digitalocean
-    - exoscale
-    - gcp
-    - hetzner
-    - hyperv
-    - ibmcloud
     - kubevirt
-    - nutanix
-    - oraclecloud
-    - proxmoxve
-    - virtualbox
-    - vmware
-    - vultr

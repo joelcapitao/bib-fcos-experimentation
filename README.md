@@ -81,6 +81,15 @@ which introduced the ability to use `bootc install to-filesystem` for FCOS image
 
 ## Usage
 
+### KubeVirt container-disk artifacts
+
+KubeVirt x86_64 is packaged and published directly by Buildah as an OCI
+container-disk image at <OUTPUT_IMAGE>-kubevirt with linux/amd64 metadata.
+The remote VM needs Buildah. KubeVirt is excluded from ARTIFACT_TAGS
+to avoid conflicting with the source container's linux/amd64 index entry.
+
+### Generic disk images
+
 ```bash
 TARGET_FCOS_IMAGE=quay.io/fedora/fedora-coreos:rawhide
 BUILDER=quay.io/bootc-devel/fedora-bootc-rawhide-standard
@@ -137,5 +146,19 @@ CI (`check-blueprints.yaml`) will fail if generated files are out of date.
 Console kargs follow the canonical FCOS
 [platforms.yaml](https://github.com/coreos/fedora-coreos-config/blob/testing-devel/platforms.yaml).
 
-## Current Issues
+## Konflux output
 
+The output of the pipelines in `.tekton` is an OCI manifest containing all the built disk images
+as well as the original container.
+
+The disk images entries are identified with the `artifactType` attribute, built injecting the
+platform and the file extension.
+e.g. for the qemu artifact, the resulting `artifactType` string
+would be `application/vnd.diskimage.qemu.qcow2`.
+
+So retrieving the QEMU disk image can be done with :
+```
+DIGEST=$(oras manifest fetch <registry>/<repo>:<tag> | \
+  jq -r '.manifests[] | select(.artifactType=="application/vnd.diskimage.qemu.qcow2") | .digest')
+oras pull <registry>/<repo>@${DIGEST}
+```
