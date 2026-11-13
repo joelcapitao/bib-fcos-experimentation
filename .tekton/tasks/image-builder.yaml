@@ -57,10 +57,9 @@ spec:
     - name: OUTPUT_IMAGE
       type: string
       description: >
-        Target OCI image reference where the OCI index will be pushed.
-        Individual artifacts are pushed with temporary tags (<OUTPUT_IMAGE>-<artifact>)
-        and then combined into the final index at OUTPUT_IMAGE.
-        e.g. quay.io/redhat-user-workloads/fcos-tenant/fcos-disk:rawhide
+        Base OCI image reference for temporary artifact tags. The task appends
+        the target architecture and artifact name; the pipeline assembles those
+        artifacts into the final index.
 
     - name: ORAS_IMAGE
       type: string
@@ -68,6 +67,13 @@ spec:
       description: >
         OCI image for the oras CLI tool, used to push artifacts with custom
         platform metadata and create the OCI index.
+
+    - name: TASK_RUNNER_IMAGE
+      type: string
+      default: "quay.io/konflux-ci/task-runner:4.0.0@sha256:ab7440e1101af1ff0418e16badede2f1590664d3189099030bf3f782371bd9da"
+      description: >
+        OCI image providing CLI tools not available on the build
+        host, so it they are run through podman. Input is passed through stdin.
 
     - name: SOURCE_ARTIFACT
       type: string
@@ -140,6 +146,8 @@ spec:
         value: $(params.STORAGE_DRIVER)
       - name: ORAS_IMAGE
         value: $(params.ORAS_IMAGE)
+      - name: TASK_RUNNER_IMAGE
+        value: $(params.TASK_RUNNER_IMAGE)
       - name: ARTIFACTS_FILE
         value: $(params.ARTIFACTS_FILE)
     volumeMounts:
@@ -266,6 +274,7 @@ spec:
         # Resolve arch from platform (linux/amd64 → amd64)
         # ------------------------------------------------------------------
         OCI_ARCH="${PLATFORM##*/}"
+        OUTPUT_IMAGE="${OUTPUT_IMAGE}-linux-${OCI_ARCH}"
 
         # ------------------------------------------------------------------
         # Translate OCI arch names to Fedora/RPM arch names for file paths
@@ -279,7 +288,7 @@ spec:
         # ------------------------------------------------------------------
         # Set up SSH access to the remote VM
         # ------------------------------------------------------------------
-        echo "[$(date --utc -Ins)] Prepare connection"
+        echo "[$(date --utc -Ins)] Prepare build host"
 
         mkdir -p ~/.ssh
         ls -la /ssh
@@ -288,19 +297,46 @@ spec:
           #no server could be provisioned
           cat /ssh/error
           exit 1
+        fi
+        SSH_HOST=$(cat /ssh/host)
+        export SSH_HOST
+
+        if [ "$SSH_HOST" == "localhost" ] ; then
+          IS_LOCALHOST=true
+          echo "Localhost detected; running build in cluster"
         elif [ -e "/ssh/otp" ]; then
-          curl --cacert /ssh/otp-ca -XPOST -d @/ssh/otp $(cat /ssh/otp-server) >~/.ssh/id_rsa
+          if ! curl --fail --cacert /ssh/otp-ca -XPOST -d @/ssh/otp "$(cat /ssh/otp-server)" >~/.ssh/id_rsa; then
+            echo "Failed to retrieve SSH key from the OTP server. This can happen when the PipelineRun retry option re-runs a task whose one-time credential was already consumed. Please, start a new build, and if problem persists, please report it as an MPC bug." >&2
+            exit 1
+          fi
           echo "" >> ~/.ssh/id_rsa
         else
           cp /ssh/id_rsa ~/.ssh
         fi
-        chmod 0400 ~/.ssh/id_rsa
-        export SSH_HOST=$(cat /ssh/host)
-        export BUILD_DIR="$(cat /ssh/user-dir)/disk-images"
-        export SSH_ARGS=(-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -i ~/.ssh/id_rsa)
+
+        # ------------------------------------------------------------------
+        # Abstract over where the build runs: on the remote VM through SSH,
+        # or directly in this step when the MPC allocated "localhost".
+        #   on_build_host <cmd...>  run a command on the build host
+        #   RSYNC_ARGS              rsync options to reach the build host
+        #   BUILD_HOST_PREFIX       rsync destination prefix ("host:" or "")
+        # ------------------------------------------------------------------
+        if [[ $IS_LOCALHOST ]]; then
+          export BUILD_DIR="/var/workdir/disk-images"
+          BUILD_HOST_PREFIX=""
+          RSYNC_ARGS=(-ra)
+          on_build_host() { bash -c "$*"; }
+        else
+          chmod 0400 ~/.ssh/id_rsa
+          export BUILD_DIR="$(cat /ssh/user-dir)/disk-images"
+          export SSH_ARGS=(-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -i ~/.ssh/id_rsa)
+          BUILD_HOST_PREFIX="$SSH_HOST:"
+          RSYNC_ARGS=(-e "ssh ${SSH_ARGS[*]}" -ra)
+          on_build_host() { ssh "${SSH_ARGS[@]}" "$SSH_HOST" "$@"; }
+        fi
         mkdir -p scripts
         echo "$BUILD_DIR"
-        ssh "${SSH_ARGS[@]}" "$SSH_HOST" mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/entitlement" "$BUILD_DIR/activation-key"
+        on_build_host mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/entitlement" "$BUILD_DIR/activation-key"
 
         if [ ! -n "${CONFIG_TOML_FILE}" ]; then
           echo "No CONFIG_TOML_FILE specified"
@@ -316,21 +352,21 @@ spec:
         echo "Using the following config.toml file $CONFIG_TOML_FILE:"
         cat /var/workdir/source/$CONFIG_TOML_FILE
 
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra "/var/workdir/source/$CONFIG_TOML_FILE" "$SSH_HOST:$BUILD_DIR/config.toml"
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra "$HOME/.docker/" "$SSH_HOST:$BUILD_DIR/.docker/"
+        rsync "${RSYNC_ARGS[@]}" "/var/workdir/source/$CONFIG_TOML_FILE" "${BUILD_HOST_PREFIX}$BUILD_DIR/config.toml"
+        rsync "${RSYNC_ARGS[@]}" "$HOME/.docker/" "${BUILD_HOST_PREFIX}$BUILD_DIR/.docker/"
         # Rsync activation-key for remote registration or entitlement certificates if provided
         if [ -e "/activation-key/org" ]; then
           echo "Syncing activation-key for remote registration"
-          rsync -e "ssh ${SSH_ARGS[*]}" -ra /activation-key/ "$SSH_HOST:$BUILD_DIR/activation-key/"
+          rsync "${RSYNC_ARGS[@]}" /activation-key/ "${BUILD_HOST_PREFIX}$BUILD_DIR/activation-key/"
         elif [ -d "/entitlement" ] && [ "$(ls -A /entitlement)" ]; then
           echo "Syncing provided entitlement certificates"
-          rsync -e "ssh ${SSH_ARGS[*]}" -ra /entitlement/ "$SSH_HOST:$BUILD_DIR/entitlement/"
+          rsync "${RSYNC_ARGS[@]}" /entitlement/ "${BUILD_HOST_PREFIX}$BUILD_DIR/entitlement/"
         fi
 
         echo "ARCH: '${ARCH}'"
         echo "OCI_ARCH: '${OCI_ARCH}'"
 
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra /var/workdir/artifacts.txt "$SSH_HOST:$BUILD_DIR/artifacts.txt"
+        rsync "${RSYNC_ARGS[@]}" /var/workdir/artifacts.txt "${BUILD_HOST_PREFIX}$BUILD_DIR/artifacts.txt"
 
         # Variables that expand locally (build-time):
         cat > scripts/script-build.sh << REMOTESSHEOF
@@ -344,6 +380,7 @@ spec:
         export OUTPUT_NAME="${OUTPUT_NAME}"
         export IBC_IMAGE="${IBC_IMAGE}"
         export ORAS_IMAGE="${ORAS_IMAGE}"
+        export TASK_RUNNER_IMAGE="${TASK_RUNNER_IMAGE}"
         export ARCH="${ARCH}"
         export OCI_ARCH="${OCI_ARCH}"
 
@@ -353,6 +390,14 @@ spec:
         cat >> scripts/script-build.sh << 'REMOTESSHEOF'
 
         REPO_DIR="${BUILD_DIR}/workspaces/source"
+
+        # When running in-cluster (localhost) we are root and sudo may be missing.
+        # Small noop alias for sudo
+        # (an alias rather than a function, so `set -x` doesn't trace each call twice)
+        if [ "$(id -u)" -eq 0 ] && ! command -v sudo >/dev/null 2>&1; then
+          shopt -s expand_aliases
+          alias sudo=''
+        fi
 
         # Read artifacts list
         mapfile -t ARTIFACTS < "${BUILD_DIR}/artifacts.txt"
@@ -372,6 +417,13 @@ spec:
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${SOURCE_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${ORAS_IMAGE}"
+        sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${TASK_RUNNER_IMAGE}"
+
+        # jq is not installed on the build host: run it in a container.
+        # It only reads from stdin, e.g. `jq -r '.foo' < file` or `echo "$json" | jq .`
+        jq() {
+          sudo podman run --rm -i --pull=never --network=none --entrypoint jq "${TASK_RUNNER_IMAGE}" "$@"
+        }
 
         # Tag images with local names to avoid multi-arch manifest list resolution issues.
         # When podman pulls a multi-arch image, it stores only the arch-specific manifest,
@@ -431,7 +483,7 @@ spec:
 
         # Extract auth from config.json and decode it
         # The config.json has format: {"auths": {"quay.io/org/repo": {"auth": "base64(user:pass)"}}}
-        AUTH_B64=$(jq -r ".auths[\"${REGISTRY_PATH}\"].auth // empty" "${BUILD_DIR}/.docker/config.json")
+        AUTH_B64=$(jq -r ".auths[\"${REGISTRY_PATH}\"].auth // empty" < "${BUILD_DIR}/.docker/config.json")
 
         if [ -n "${AUTH_B64}" ]; then
           AUTH_DECODED=$(echo "${AUTH_B64}" | base64 -d)
@@ -448,7 +500,7 @@ spec:
         else
           echo "WARNING: No auth found for ${REGISTRY_PATH} in config.json"
           echo "Available registries:"
-          jq -r '.auths | keys[]' "${BUILD_DIR}/.docker/config.json"
+          jq -r '.auths | keys[]' < "${BUILD_DIR}/.docker/config.json"
         fi
 
         # Initialize build report
@@ -601,21 +653,21 @@ spec:
 
         REMOTESSHEOF
 
-        # make scripts executable and sync them to the cloud VM
+        # make scripts executable and sync them to the build host
         chmod +x scripts/script-build.sh
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra scripts "$SSH_HOST:$BUILD_DIR"
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra /var/workdir/source/ "$SSH_HOST:$BUILD_DIR/workspaces/source/"
+        rsync "${RSYNC_ARGS[@]}" scripts "${BUILD_HOST_PREFIX}$BUILD_DIR"
+        rsync "${RSYNC_ARGS[@]}" /var/workdir/source/ "${BUILD_HOST_PREFIX}$BUILD_DIR/workspaces/source/"
 
-        ssh "${SSH_ARGS[@]}" "$SSH_HOST" "$BUILD_DIR/scripts/script-build.sh"
-        rsync -e "ssh ${SSH_ARGS[*]}" -ra "$SSH_HOST:$BUILD_DIR/tekton-results/" "/tekton/results/"
+        on_build_host "$BUILD_DIR/scripts/script-build.sh"
+        rsync "${RSYNC_ARGS[@]}" "${BUILD_HOST_PREFIX}$BUILD_DIR/tekton-results/" "/tekton/results/"
 
         # ------------------------------------------------------------------
-        # Clean up all build artifacts on the remote VM to prevent stale
+        # Clean up all build artifacts on the build host to prevent stale
         # files from interfering with subsequent runs (e.g. gzip refusing
         # to overwrite an existing .gz file).
         # ------------------------------------------------------------------
-        echo "[$(date --utc -Ins)] Cleaning up build artifacts on remote VM"
-        ssh "${SSH_ARGS[@]}" "$SSH_HOST" "rm -rf ${BUILD_DIR}/output ${BUILD_DIR}/workspaces ${BUILD_DIR}/scripts ${BUILD_DIR}/tekton-results ${BUILD_DIR}/config.toml ${BUILD_DIR}/.docker ${BUILD_DIR}/entitlement ${BUILD_DIR}/activation-key ${BUILD_DIR}/tmp"
+        echo "[$(date --utc -Ins)] Cleaning up build artifacts on build host"
+        on_build_host "rm -rf ${BUILD_DIR}/output ${BUILD_DIR}/workspaces ${BUILD_DIR}/scripts ${BUILD_DIR}/tekton-results ${BUILD_DIR}/config.toml ${BUILD_DIR}/.docker ${BUILD_DIR}/entitlement ${BUILD_DIR}/activation-key ${BUILD_DIR}/tmp"
         echo "[$(date --utc -Ins)] Cleanup complete"
 
   volumes:
@@ -624,5 +676,4 @@ spec:
     - name: ssh
       secret:
         optional: false
-        #secretName: multi-platform-ssh-$(context.taskRun.name)
-        secretName: own-custom-vm
+        secretName: multi-platform-ssh-$(context.taskRun.name)
