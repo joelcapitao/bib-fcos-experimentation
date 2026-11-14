@@ -151,7 +151,7 @@ spec:
     # 1. Fetch the cloned repository from the OCI Trusted Artifact.
     # -------------------------------------------------------------------------
     - name: use-trusted-artifact
-      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:59d4997c0d4ebfb2a93f52a942cae109b934c3dcac8a5252639ac8418f070783
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:d7e9f457d819b91d5f4b62effea105d54c6e54bedcc3afb2a7a9fcaaf752076b
       computeResources:
         limits:
           memory: 64Mi
