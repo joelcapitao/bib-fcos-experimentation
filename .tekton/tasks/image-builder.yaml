@@ -19,6 +19,9 @@ metadata:
 
       Blueprints and disk layout are read directly from the cloned repository.
 
+      Container resolution and fetching require registry access. Registry
+      credentials are forwarded to image-builder.
+
       These merged blueprints are generated from the layered source files
       in blueprints/sources/ (shared/base.toml, shared/<arch>.toml,
       <ARTIFACT>/<arch>.toml) by running
@@ -373,22 +376,6 @@ spec:
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${ORAS_IMAGE}"
 
-        # Tag images with local names to avoid multi-arch manifest list resolution issues.
-        # When podman pulls a multi-arch image, it stores only the arch-specific manifest,
-        # but image-builder-cli's resolver fetches the manifest list from the registry
-        # and tries to find the index digest locally, which fails.
-        # By tagging with localhost/..., we force image-builder-cli to use the local
-        # image directly without any registry lookup.
-        # See: https://github.com/osbuild/image-builder/blob/32ac16dfe27419a5f734055fa3f554e22405f5f0/pkg/container/client.go#L555-L564
-        BUILDER_IMAGE_LOCAL="localhost/builder-image:local"
-        SOURCE_IMAGE_LOCAL="localhost/source-image:local"
-
-        sudo podman tag "${BUILDER_IMAGE}" "${BUILDER_IMAGE_LOCAL}"
-        echo "Tagged BUILDER_IMAGE: ${BUILDER_IMAGE} -> ${BUILDER_IMAGE_LOCAL}"
-
-        sudo podman tag "${SOURCE_IMAGE}" "${SOURCE_IMAGE_LOCAL}"
-        echo "Tagged SOURCE_IMAGE: ${SOURCE_IMAGE} -> ${SOURCE_IMAGE_LOCAL}"
-
         # ------------------------------------------------------------------
         # Extract labels from SOURCE_IMAGE to forward as OCI annotations
         # on the disk image artifacts.
@@ -490,16 +477,20 @@ spec:
           rm -rf "${OUTPUT_DIR}"
           mkdir -p "${OUTPUT_DIR}"
 
-          # Run image-builder-cli
+          # Resolve containers from the registry to avoid local multi-arch manifest
+          # lookup failures.
           echo "=== Building ${artifact} disk image ==="
           if ! sudo podman run --rm --privileged --pull=never \
+            -e REGISTRY_AUTH_FILE=/run/containers/0/auth.json \
+            -v "${BUILD_DIR}/.docker/config.json:/run/containers/0/auth.json:ro" \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
             -v "${REPO_DIR}:/repo:ro" \
             -v "${OUTPUT_DIR}:/output" \
             "${IBC_IMAGE}" \
             build "${IMAGE_TYPE}" \
-            --bootc-build-ref "${BUILDER_IMAGE_LOCAL}" \
-            --bootc-ref "${SOURCE_IMAGE_LOCAL}" \
+            --bootc-build-ref "${BUILDER_IMAGE}" \
+            --bootc-ref "${SOURCE_IMAGE}" \
+            --bootc-pull-container=true \
             --blueprint "/repo/blueprints/generated/${artifact}-${ARCH}.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
