@@ -484,6 +484,7 @@ spec:
           # application/vnd.diskimage.<artifact>.<filetype> so that each
           # entry in the resulting OCI index can be distinguished by its
           # artifactType
+          BOOTC_ARGS=(--bootc-build-ref "${BUILDER_IMAGE_LOCAL}" --bootc-ref "${SOURCE_IMAGE_LOCAL}")
           case "${artifact}" in
             qemu)  IMAGE_TYPE="qcow2"; EXT="qcow2"; FILETYPE="qcow2" ;;
             metal) IMAGE_TYPE="raw";   EXT="raw";   FILETYPE="raw.gzip" ;;
@@ -494,6 +495,7 @@ spec:
                 continue
               fi
               IMAGE_TYPE="qcow2"; EXT="qcow2"; FILETYPE="qcow2"
+              BOOTC_ARGS+=(--bootc-no-default-kernel-args)
               ;;
             *)     IMAGE_TYPE="qcow2"; EXT="qcow2"; FILETYPE="qcow2" ;;
           esac
@@ -517,8 +519,7 @@ spec:
             -v "${OUTPUT_DIR}:/output" \
             "${IBC_IMAGE}" \
             build "${IMAGE_TYPE}" \
-            --bootc-build-ref "${BUILDER_IMAGE_LOCAL}" \
-            --bootc-ref "${SOURCE_IMAGE_LOCAL}" \
+            "${BOOTC_ARGS[@]}" \
             --blueprint "/repo/blueprints/generated/${artifact}-${ARCH}.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \
