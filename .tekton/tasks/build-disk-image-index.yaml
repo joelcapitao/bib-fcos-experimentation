@@ -12,14 +12,17 @@ metadata:
 
       This task takes image references (pushed by the image-builder task)
       and assembles them into a single OCI manifest index. The IMAGES list
-      may contain both disk image ORAS artifacts (with custom platform
-      metadata os=<artifact>, architecture=<arch>) and regular container
-      images (with native platform os=linux, architecture=<arch>).
-
-      The final index allows pulling specific entries with:
-        oras pull --platform qemu/amd64 <registry>/<repo>:<tag>   (disk image)
-        oras pull --platform metal/arm64 <registry>/<repo>:<tag>  (disk image)
-        podman pull --platform linux/amd64 <registry>/<repo>:<tag> (container)
+      may contain both disk image ORAS artifacts and regular container images.
+      Container have no artifact type value set.
+      Disk images have an artifactType of application/vnd.diskimage.<artifact>.<filetype>, e.g.
+      application/vnd.diskimage.qemu.qcow2, and a real platform (os=linux,
+      architecture=<arch>).
+      `oras manifest index create` copies each source manifest's own
+      artifactType into its index entry, so disk image variants are
+      distinguished by artifactType while the platform keeps identifying
+      the architecture (useful if multiple architectures are ever combined
+      into the same index). Container image entries keep an empty
+      artifactType and their own native platform.
 
       Inspired by Konflux build-image-index task but adapted for mixed
       disk image artifacts and container images.
