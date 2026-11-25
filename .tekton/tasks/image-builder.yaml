@@ -19,6 +19,11 @@ metadata:
 
       Blueprints and disk layout are read directly from the cloned repository.
 
+      The pulled SOURCE_IMAGE is tagged locally as TAGGED_AS and used without
+      network access during disk construction. TAGGED_AS is recorded as the
+      installed guest's bootc update source; the original SOURCE_IMAGE remains
+      the build input and is included in the published OCI index.
+
       These merged blueprints are generated from the layered source files
       in blueprints/sources/ (shared/base.toml, shared/<arch>.toml,
       <ARTIFACT>/<arch>.toml) by running
@@ -53,6 +58,16 @@ spec:
         the disk image from. This should be the image produced by the
         build-container-image task, e.g.
         quay.io/redhat-user-workloads/coreos-tenant/fcos-bootc:tag@sha256:...
+
+    - name: TAGGED_AS
+      type: string
+      description: >
+        Fully qualified bootc container registry reference with an explicit
+        update-channel tag, e.g. quay.io/fedora/fedora-coreos:rawhide.
+        The pulled SOURCE_IMAGE is tagged with this name locally, without
+        pushing it. The guest uses this reference for subsequent bootc updates,
+        so it must point to a maintained bootc image, not a disk image artifact,
+        and must not be digest-pinned.
 
     - name: OUTPUT_IMAGE
       type: string
@@ -130,6 +145,8 @@ spec:
         value: $(params.PLATFORM)
       - name: SOURCE_IMAGE
         value: $(params.SOURCE_IMAGE)
+      - name: TAGGED_AS
+        value: $(params.TAGGED_AS)
       - name: OUTPUT_IMAGE
         value: $(params.OUTPUT_IMAGE)
       - name: IMAGE_BUILDER_CONFIG_FILE
@@ -176,6 +193,11 @@ spec:
       script: |
         #!/bin/bash
         set -euo pipefail
+
+        if [[ -z "${TAGGED_AS}" || "${TAGGED_AS}" == *@* || "${TAGGED_AS##*/}" != *:* ]]; then
+          echo "ERROR: TAGGED_AS must include an update-channel tag and must not be digest-pinned"
+          exit 1
+        fi
 
         # ------------------------------------------------------------------
         # Parse image-builder-config.yaml for image pullspecs
@@ -340,6 +362,7 @@ spec:
         export BUILD_DIR="${BUILD_DIR}"
         export OUTPUT_IMAGE="${OUTPUT_IMAGE}"
         export SOURCE_IMAGE="${SOURCE_IMAGE}"
+        export TAGGED_AS="${TAGGED_AS}"
         export BUILDER_IMAGE="${BUILDER_IMAGE}"
         export OUTPUT_NAME="${OUTPUT_NAME}"
         export IBC_IMAGE="${IBC_IMAGE}"
@@ -359,6 +382,7 @@ spec:
 
         echo "=== Build Configuration ==="
         echo "SOURCE_IMAGE:   ${SOURCE_IMAGE}"
+        echo "TAGGED_AS:      ${TAGGED_AS}"
         echo "BUILDER_IMAGE:  ${BUILDER_IMAGE}"
         echo "OUTPUT_IMAGE:   ${OUTPUT_IMAGE}"
         echo "OUTPUT_NAME:    ${OUTPUT_NAME}"
@@ -373,21 +397,18 @@ spec:
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${BUILDER_IMAGE}"
         sudo podman pull --authfile="${BUILD_DIR}/.docker/config.json" "${ORAS_IMAGE}"
 
-        # Tag images with local names to avoid multi-arch manifest list resolution issues.
-        # When podman pulls a multi-arch image, it stores only the arch-specific manifest,
-        # but image-builder-cli's resolver fetches the manifest list from the registry
-        # and tries to find the index digest locally, which fails.
-        # By tagging with localhost/..., we force image-builder-cli to use the local
-        # image directly without any registry lookup.
-        # See: https://github.com/osbuild/image-builder/blob/32ac16dfe27419a5f734055fa3f554e22405f5f0/pkg/container/client.go#L555-L564
+        # Use tags to resolve the pulled architecture-specific images locally,
+        # avoiding multi-arch index digest lookups. Only the builder uses an
+        # internal localhost alias; --bootc-ref also sets the guest's update source.
         BUILDER_IMAGE_LOCAL="localhost/builder-image:local"
-        SOURCE_IMAGE_LOCAL="localhost/source-image:local"
 
-        sudo podman tag "${BUILDER_IMAGE}" "${BUILDER_IMAGE_LOCAL}"
+        sudo podman tag "${BUILDER_IMAGE}" "${BUILDER_IMAGE_LOCAL}" || exit 1
         echo "Tagged BUILDER_IMAGE: ${BUILDER_IMAGE} -> ${BUILDER_IMAGE_LOCAL}"
 
-        sudo podman tag "${SOURCE_IMAGE}" "${SOURCE_IMAGE_LOCAL}"
-        echo "Tagged SOURCE_IMAGE: ${SOURCE_IMAGE} -> ${SOURCE_IMAGE_LOCAL}"
+        # Retag the exact source content with the maintained update reference.
+        # Do not pull TAGGED_AS: the registry tag may identify a different build.
+        sudo podman tag "${SOURCE_IMAGE}" "${TAGGED_AS}" || exit 1
+        echo "Tagged SOURCE_IMAGE: ${SOURCE_IMAGE} -> ${TAGGED_AS}"
 
         # ------------------------------------------------------------------
         # Extract labels from SOURCE_IMAGE to forward as OCI annotations
@@ -492,14 +513,15 @@ spec:
 
           # Run image-builder-cli
           echo "=== Building ${artifact} disk image ==="
-          if ! sudo podman run --rm --privileged --pull=never \
+          if ! sudo podman run --rm --privileged --pull=never --network=none \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
             -v "${REPO_DIR}:/repo:ro" \
             -v "${OUTPUT_DIR}:/output" \
             "${IBC_IMAGE}" \
             build "${IMAGE_TYPE}" \
             --bootc-build-ref "${BUILDER_IMAGE_LOCAL}" \
-            --bootc-ref "${SOURCE_IMAGE_LOCAL}" \
+            --bootc-ref "${TAGGED_AS}" \
+            --bootc-pull-container=false \
             --blueprint "/repo/blueprints/generated/${artifact}-${ARCH}.toml" \
             --output-dir /output \
             --output-name "${OUTPUT_NAME}" \

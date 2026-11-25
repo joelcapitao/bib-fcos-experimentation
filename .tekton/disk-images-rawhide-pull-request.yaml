@@ -32,6 +32,8 @@ spec:
     value: fedora-coreos-rawhide
   - name: source-image
     value: quay.io/konflux-fedora/coreos-tenant/fedora-coreos-rawhide@sha256:cefb93e46e1c017e308011e8c0c8159d74515c38ec9537bc460c50de1179c4c8
+  - name: tagged-as
+    value: quay.io/fedora/fedora-coreos:rawhide
   pipelineSpec:
     description: |
       This pipeline builds Fedora CoreOS disk images (qemu, metal, etc.) for
@@ -65,6 +67,9 @@ spec:
       type: string
     - description: Fully qualified pullspec of the upstream FCOS bootc container image.
       name: source-image
+      type: string
+    - description: Maintained bootc update tag applied locally to the source image.
+      name: tagged-as
       type: string
     tasks:
     - name: init
@@ -116,6 +121,8 @@ spec:
         value: artifacts.yaml
       - name: SOURCE_IMAGE
         value: $(params.source-image)
+      - name: TAGGED_AS
+        value: $(params.tagged-as)
       - name: OUTPUT_IMAGE
         value: $(params.output-image)-linux-amd64
       - name: OUTPUT_NAME
