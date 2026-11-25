@@ -14,8 +14,11 @@ metadata:
       This task builds all artifacts defined in artifacts.yaml for a
       single architecture in the same VM. The artifact list is derived from
       default_artifacts.all merged with default_artifacts.<arch>. Each artifact
-      is pushed individually as an OCI artifact with a config JSON carrying
-      platform metadata (os=<artifact>, architecture=<arch>).
+      is pushed individually as an OCI artifact with an artifact type of the form
+      application/vnd.diskimage.<artifact>.<filetype> (e.g.
+      application/vnd.diskimage.qemu.qcow2) that identifies the disk image
+      variant, and a real platform (os=linux, architecture=<arch>) set via
+      `oras push --artifact-platform` that identifies the architecture.
 
       Blueprints and disk layout are read directly from the cloned repository.
 
@@ -27,9 +30,10 @@ metadata:
       stay in sync with the source layers.
 
       Each disk image is pushed as a separate OCI artifact with a tag of
-      <OUTPUT_IMAGE>-<artifact> and an OCI config JSON containing the platform
-      metadata (architecture, os). The build-disk-image-index task is then
-      responsible for assembling these into a single OCI index.
+      <OUTPUT_IMAGE>-<artifact>, an artifact type identifying the disk
+      image variant, and a platform identifying the architecture.
+      The build-disk-image-index task is then responsible for assembling
+      these into a single OCI index.
 
       Artifacts without blueprints for the target arch are silently skipped.
       If one artifact fails to build, the task continues with the others (best-effort).
@@ -66,8 +70,8 @@ spec:
       type: string
       default: "ghcr.io/oras-project/oras:v1.3.0@sha256:6ce045ce069a89934d6666b8b49f9c4c0145201bd6de6dbe2aee267814c55468"
       description: >
-        OCI image for the oras CLI tool, used to push artifacts with custom
-        platform metadata and create the OCI index.
+        OCI image for the oras CLI tool, used to push disk image artifacts
+        with a custom artifact type and create the OCI index.
 
     - name: SOURCE_ARTIFACT
       type: string
@@ -402,16 +406,18 @@ spec:
         echo "CONFIG_GIT_URL: ${CONFIG_GIT_URL}"
         echo "CONFIG_GIT_REF: ${CONFIG_GIT_REF}"
 
-        # Build annotation flags for oras push (only include non-empty labels)
-        ORAS_ANNOTATIONS=()
+        # Build annotation flags for `buildah manifest add --artifact`
+        # (only include non-empty labels). --artifact-annotation sets the
+        # annotation directly on the created artifact manifest.
+        ARTIFACT_ANNOTATIONS=()
         if [ -n "${CONFIG_COMMIT}" ]; then
-          ORAS_ANNOTATIONS+=(--annotation "vcs-ref=${CONFIG_COMMIT}")
+          ARTIFACT_ANNOTATIONS+=(--artifact-annotation "vcs-ref=${CONFIG_COMMIT}")
         fi
         if [ -n "${CONFIG_GIT_URL}" ]; then
-          ORAS_ANNOTATIONS+=(--annotation "org.opencontainers.image.source=${CONFIG_GIT_URL}")
+          ARTIFACT_ANNOTATIONS+=(--artifact-annotation "org.opencontainers.image.source=${CONFIG_GIT_URL}")
         fi
         if [ -n "${CONFIG_GIT_REF}" ]; then
-          ORAS_ANNOTATIONS+=(--annotation "com.coreos.stream=${CONFIG_GIT_REF}")
+          ARTIFACT_ANNOTATIONS+=(--artifact-annotation "com.coreos.stream=${CONFIG_GIT_REF}")
         fi
 
         # create the output dir (clean any leftovers from a previous run)
@@ -473,12 +479,17 @@ spec:
             continue
           fi
 
-          # Determine image type based on artifact
+          # Determine image type based on artifact.
+          # MEDIA_TYPE (used as the oras --artifact-type) follows the scheme
+          # application/vnd.diskimage.<artifact>.<filetype> so that each
+          # entry in the resulting OCI index can be distinguished by its
+          # artifactType
           case "${artifact}" in
-            qemu)  IMAGE_TYPE="qcow2"; EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
-            metal) IMAGE_TYPE="raw";   EXT="raw";   MEDIA_TYPE="application/vnd.diskimage.raw.gzip" ;;
-            *)     IMAGE_TYPE="qcow2"; EXT="qcow2"; MEDIA_TYPE="application/vnd.diskimage.qcow2" ;;
+            qemu)  IMAGE_TYPE="qcow2"; EXT="qcow2"; FILETYPE="qcow2" ;;
+            metal) IMAGE_TYPE="raw";   EXT="raw";   FILETYPE="raw.gzip" ;;
+            *)     IMAGE_TYPE="qcow2"; EXT="qcow2"; FILETYPE="qcow2" ;;
           esac
+          MEDIA_TYPE="application/vnd.diskimage.${artifact}.${FILETYPE}"
 
           echo "IMAGE_TYPE: ${IMAGE_TYPE}"
           echo "MEDIA_TYPE: ${MEDIA_TYPE}"
@@ -521,40 +532,38 @@ spec:
             continue
           fi
 
-          # Push artifact with oras using a config JSON for platform metadata
+          # Push artifact with buildah. The disk image variant is identified
+          # by --artifact-type, and the real architecture is recorded via
+          # --arch so the final OCI index keeps a correct platform.
           ARTIFACT_TAG="${OUTPUT_IMAGE}-${artifact}"
-          echo "=== Pushing ${artifact} to ${ARTIFACT_TAG} with platform ${artifact}/${OCI_ARCH} ==="
+          echo "=== Pushing ${artifact} to ${ARTIFACT_TAG} (artifact-type ${MEDIA_TYPE}, platform linux/${OCI_ARCH}) ==="
 
-          # Get just the filename for oras
+          # Get just the filename for buildah
           DISK_FILENAME=$(basename "${DISK_FILE}")
 
-          # Generate OCI config JSON with platform metadata
-          # This allows `oras pull --platform <artifact>/<arch>` to work
-          CONFIG_FILE="${OUTPUT_DIR}/config-${artifact}-${OCI_ARCH}.json"
-          cat > "${CONFIG_FILE}" <<CONFIGEOF
-        {
-          "architecture": "${OCI_ARCH}",
-          "os": "${artifact}",
-          "rootfs": {
-            "type": "layers",
-            "diff_ids": []
-          },
-          "config": {}
-        }
-        CONFIGEOF
+          # We create an empty manifest list from scratch. Remove any
+          # leftover list with the same name first (e.g. from a previous
+          # run on this persistent VM) so stale entries don't linger.
+          buildah manifest rm "${ARTIFACT_TAG}" >/dev/null 2>&1 || true
+          if ! buildah manifest create "${ARTIFACT_TAG}"; then
+            echo "ERROR: Failed to create manifest list for ${artifact}"
+            BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".failed += [\"$artifact\"]")
+            continue
+          fi
 
-          if ! sudo podman run --rm \
-            -v "${OUTPUT_DIR}:/output:Z" \
-            -v "${BUILD_DIR}/.docker:/root/.docker:Z" \
-            -w "/output" \
-            "${ORAS_IMAGE}" \
-            push \
-            --registry-config /root/.docker/config.json \
-            --artifact-type "${MEDIA_TYPE}" \
-            --config "$(basename "${CONFIG_FILE}"):application/vnd.oci.image.config.v1+json" \
-            "${ORAS_ANNOTATIONS[@]}" \
-            "${ARTIFACT_TAG}" \
-            "${DISK_FILENAME}"; then
+          if ! buildah manifest add --arch "${OCI_ARCH}" --os linux \
+              --artifact --artifact-type "${MEDIA_TYPE}" \
+              "${ARTIFACT_ANNOTATIONS[@]}" \
+              "${ARTIFACT_TAG}" \
+              "${OUTPUT_DIR}/${DISK_FILENAME}"; then
+
+            echo "ERROR: Failed to add ${artifact} artifact to manifest list"
+            BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".failed += [\"$artifact\"]")
+            continue
+          fi
+
+          if ! buildah manifest push --authfile "${BUILD_DIR}/.docker/config.json" \
+              --all "${ARTIFACT_TAG}"; then
 
             echo "ERROR: Failed to push ${artifact}"
             BUILD_REPORT=$(echo "$BUILD_REPORT" | jq -c ".failed += [\"$artifact\"]")
