@@ -31,7 +31,7 @@ spec:
   - name: output-name
     value: fedora-coreos-rawhide
   - name: source-image
-    value: quay.io/konflux-fedora/coreos-tenant/fedora-coreos-rawhide@sha256:5cfa5dba2232497d19115de787ae9e8c46c2c42094071f9b5c9d260ed40e4403
+    value: quay.io/konflux-fedora/coreos-tenant/fedora-coreos-rawhide@sha256:cefb93e46e1c017e308011e8c0c8159d74515c38ec9537bc460c50de1179c4c8
   - name: tagged-as
     value: quay.io/fedora/fedora-coreos:rawhide
   pipelineSpec:
