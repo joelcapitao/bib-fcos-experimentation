@@ -8,7 +8,7 @@ name = "Fedora CoreOS"
 empty = true
 
 [customizations.kernel]
-append = "mitigations=auto,nosmt $ignition_firstboot ignition.platform.id=openstack console=ttyS0,115200n8 console=tty0"
+append = "mitigations=auto,nosmt $ignition_firstboot rw ignition.platform.id=openstack console=ttyS0,115200n8 console=tty0"
 
 [customizations.bootloader]
 
